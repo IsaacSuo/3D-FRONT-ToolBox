@@ -1,5 +1,8 @@
 import os
-import igl
+try:
+    import igl
+except Exception:
+    igl = None
 import math
 import numpy as np
 import urllib.request
@@ -152,8 +155,36 @@ def save_obj(ori_obj_path, savepath, v, model_id):
 def read_obj(filepath):
     if not os.path.exists(filepath):
         quadrilateral2triangle(filepath)
-    v, vt, _, faces, ftc, _ = igl.read_obj(filepath)
-    return v
+    # libigl Python API differs across versions:
+    # - some expose read_obj
+    # - some expose readOBJ
+    # If both are unavailable, fall back to a lightweight OBJ vertex parser.
+    if igl is not None:
+        if hasattr(igl, "read_obj"):
+            v, vt, _, faces, ftc, _ = igl.read_obj(filepath)
+            return v
+        if hasattr(igl, "readOBJ"):
+            try:
+                data = igl.readOBJ(filepath)
+                # Newer bindings may return a tuple-like object.
+                if isinstance(data, (list, tuple)) and len(data) > 0:
+                    return np.asarray(data[0])
+            except Exception:
+                pass
+
+    verts = []
+    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not line.startswith("v "):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 4:
+                continue
+            try:
+                verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            except Exception:
+                continue
+    return np.asarray(verts, dtype=np.float64)
 
 
 def save_mesh(savepath, filename, *args):
