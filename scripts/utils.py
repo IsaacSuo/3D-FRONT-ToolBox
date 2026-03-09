@@ -78,12 +78,33 @@ def read_mesh_attr(mesh):
     vt = None
     mat = None
     if mesh.uv is not None:
-        vt = mesh.uv
+        # Some 3D-FRONT meshes contain invalid UV entries (e.g. None).
+        # Keep geometry export robust by dropping broken UVs for that mesh.
+        try:
+            vt = np.asarray(mesh.uv, dtype=np.float64)
+            if vt.ndim != 2 or vt.shape[1] < 2:
+                vt = None
+            else:
+                vt = vt[:, :2]
+        except Exception:
+            vt = None
+
         if mesh.material is not None:
             mat = mesh.material
-            if mat.UVTransform is not None:
-                vt = mat.UVTransform[:2,:2] @ vt.T
-                vt = vt.T
+            if vt is not None and mat.UVTransform is not None:
+                try:
+                    uv_m = np.asarray(mat.UVTransform, dtype=np.float64)
+                    vt = uv_m[:2, :2] @ vt.T
+                    vt = vt.T
+                except Exception as e:
+                    print(
+                        f"[json2obj][invalid] mesh_uid={getattr(mesh, 'uid', None)} "
+                        f"instanceid={getattr(mesh, 'instanceid', None)} "
+                        f"material_uid={getattr(mat, 'uid', None)} "
+                        f"material_jid={getattr(mat, 'jid', None)} "
+                        f"uv_transform_apply_failed err={e}"
+                    )
+                    vt = None
     return v,faces,vt, mat
 def quadrilateral2triangle(filepath):
 

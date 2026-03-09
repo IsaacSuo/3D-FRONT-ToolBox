@@ -5,6 +5,30 @@ import os
 import urllib.request
 from constants import Config
 
+def _safe_float_array(data, shape=None, debug_label=''):
+    """
+    Convert possibly dirty json arrays to float ndarray.
+    Returns None if conversion fails.
+    """
+    if data is None:
+        if debug_label:
+            print(f"[json2obj][invalid] {debug_label}: value is None")
+        return None
+    try:
+        arr = np.asarray(data, dtype=np.float64)
+    except Exception as e:
+        if debug_label:
+            print(f"[json2obj][invalid] {debug_label}: cannot cast to float64 ({type(data).__name__}) err={e}")
+        return None
+    if shape is not None:
+        try:
+            arr = np.reshape(arr, shape)
+        except Exception as e:
+            if debug_label:
+                got_shape = getattr(arr, 'shape', None)
+                print(f"[json2obj][invalid] {debug_label}: reshape failed expected={shape} got={got_shape} err={e}")
+            return None
+    return arr
 
 
 class Scene():
@@ -210,6 +234,8 @@ def read_json(jsonfile, future_path) -> Scene:
     data = json.load(fid)
     fid.close()
     scene = Scene(data['uid'])
+    invalid_uv_count = 0
+    invalid_uv_transform_count = 0
     
     if 'furniture' in data:
         for furniture in data['furniture']:
@@ -225,27 +251,47 @@ def read_json(jsonfile, future_path) -> Scene:
 
     if 'material' in data:
         for mat in data['material']:
+            uv_transform = _safe_float_array(
+                mat['UVTransform'],
+                [3, 3],
+                debug_label=f"{jsonfile} material_uid={mat.get('uid')} material_jid={mat.get('jid')} field=UVTransform",
+            ) if 'UVTransform' in mat else None
+            if 'UVTransform' in mat and uv_transform is None:
+                invalid_uv_transform_count += 1
+
             m = Material(mat['uid'],
                         mat['jid'],
-                        np.reshape(mat['UVTransform'], [3, 3]) if 'UVTransform' in mat else None,
+                        uv_transform,
                         mat['texture'])
             scene.add_material(m)
 
     if 'mesh' in data:
 
         for mesh in data['mesh']:
-            
+            uv = _safe_float_array(
+                mesh['uv'],
+                [-1, 2],
+                debug_label=f"{jsonfile} mesh_uid={mesh.get('uid')} instanceid={mesh.get('instanceid')} field=uv",
+            ) if 'uv' in mesh else None
+            if 'uv' in mesh and uv is None:
+                invalid_uv_count += 1
 
             m = Mesh(mesh['uid'],
                     np.reshape(mesh['xyz'], [-1, 3]),
                     np.reshape(mesh['faces'], [-1, 3]),
-                    np.reshape(mesh['uv'], [-1, 2]) if 'uv' in mesh else None,
+                    uv,
                     scene.material[mesh['material']] if 'material' in mesh and mesh['material'] in scene.material else None,
                     mesh['type'],
                     mesh['constructid'] if 'constructid' in mesh else None,
                     mesh['instanceid'] if 'instanceid' in mesh else None
                     )
             scene.add_mesh(m)
+
+    if invalid_uv_count > 0 or invalid_uv_transform_count > 0:
+        print(
+            f"[json2obj][summary] file={jsonfile} invalid_uv={invalid_uv_count} "
+            f"invalid_uv_transform={invalid_uv_transform_count}"
+        )
 
 
     for r in data['scene']['room']:
@@ -263,4 +309,3 @@ def read_json(jsonfile, future_path) -> Scene:
                 room.add_mesh(scene.meshes[ref])
         scene.house.add_room(room)
     return scene
-
