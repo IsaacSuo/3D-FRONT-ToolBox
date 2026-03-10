@@ -49,6 +49,7 @@ def parse_args():
     p.add_argument("--res-x", type=int, default=1600)
     p.add_argument("--res-y", type=int, default=1200)
     p.add_argument("--samples", type=int, default=512)
+    p.add_argument("--preview-images", action="store_true", help="also render light-independent preview images")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="GPU", choices=["GPU", "CPU"])
     p.add_argument("--gpu-backend", default="CUDA", choices=["CUDA", "OPTIX", "HIP", "METAL", "ONEAPI"])
@@ -275,6 +276,39 @@ def render_still(path: str):
     bpy.context.scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
 
+def get_or_create_preview_material():
+    name = "__PreviewEmissionWhite__"
+    mat = bpy.data.materials.get(name)
+    if mat:
+        return mat
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    out = nodes.new(type="ShaderNodeOutputMaterial")
+    em = nodes.new(type="ShaderNodeEmission")
+    em.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    em.inputs["Strength"].default_value = 1.0
+    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    return mat
+
+def render_preview_still(path: str, preview_mat):
+    scene = bpy.context.scene
+    layer = scene.view_layers[0]
+    old_override = layer.material_override
+    old_engine = scene.render.engine
+    old_samples = scene.cycles.samples
+    try:
+        layer.material_override = preview_mat
+        scene.render.engine = "CYCLES"
+        scene.cycles.samples = min(32, max(1, old_samples))
+        render_still(path)
+    finally:
+        layer.material_override = old_override
+        scene.render.engine = old_engine
+        scene.cycles.samples = old_samples
+
 
 def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict]):
     all_meshes = []
@@ -383,6 +417,7 @@ def main():
         "num_rooms": len(rooms),
         "rooms": [],
     }
+    preview_mat = get_or_create_preview_material() if args.preview_images else None
 
     for r_i, room_dir in enumerate(rooms):
         clear_scene()
@@ -441,6 +476,9 @@ def main():
             look_at(cam, Vector((room_center.x, room_center.y, room_floor_z + min(1.2, room_h * 0.4))))
             img_path = os.path.join(out_room, "global", f"{i:03d}.png")
             render_still(img_path)
+            if preview_mat is not None:
+                prev_path = os.path.join(out_room, "global_preview", f"{i:03d}.png")
+                render_preview_still(prev_path, preview_mat)
             renders_meta.append(
                 {
                     "type": "global",
@@ -465,6 +503,9 @@ def main():
                 look_at(cam, lc)
                 img_path = os.path.join(lamp_dir, f"{j:03d}.png")
                 render_still(img_path)
+                if preview_mat is not None:
+                    prev_path = os.path.join(out_room, "lamps_preview", f"lamp_{lamp['lamp_id']:03d}", f"{j:03d}.png")
+                    render_preview_still(prev_path, preview_mat)
                 renders_meta.append(
                     {
                         "type": "lamp_closeup",
