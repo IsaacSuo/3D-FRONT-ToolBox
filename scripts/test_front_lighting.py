@@ -279,25 +279,67 @@ def render_still(path: str):
 def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict]):
     all_meshes = []
     lamp_instances = []
+    debug = {
+        "room_dir": room_dir,
+        "num_obj_files": 0,
+        "num_import_failed": 0,
+        "num_meshes_obj": 0,
+        "num_mid_missing": 0,
+        "num_mid_not_in_model_info": 0,
+        "num_not_lighting": 0,
+        "num_lighting_detected": 0,
+        "examples_not_in_model_info": [],
+        "examples_not_lighting": [],
+    }
 
     room_objs = sorted([p for p in os.listdir(room_dir) if p.lower().endswith(".obj")])
+    debug["num_obj_files"] = len(room_objs)
     lamp_idx = 0
     for name in room_objs:
         p = os.path.join(room_dir, name)
         imported = import_obj(p)
         if not imported:
+            debug["num_import_failed"] += 1
             continue
         all_meshes.extend(imported)
 
         if name.lower() == "meshes.obj":
+            debug["num_meshes_obj"] += 1
             continue
 
         mid = parse_model_id_from_name(name)
+        if not mid:
+            # Fallback: json2obj furniture naming uses "<SuperCategory>_<model_id>_<idx>.obj".
+            # If regex failed but prefix is Lighting_, still treat as lighting for diagnostics.
+            if name.startswith("Lighting_"):
+                lamp_instances.append(
+                    {
+                        "lamp_id": lamp_idx,
+                        "model_id": "",
+                        "category": "Lighting(FromFilename)",
+                        "objects": imported,
+                        "source_obj": name,
+                    }
+                )
+                lamp_idx += 1
+                debug["num_lighting_detected"] += 1
+            else:
+                debug["num_mid_missing"] += 1
+            continue
+
         info = model_info_map.get(mid)
         if not info:
+            debug["num_mid_not_in_model_info"] += 1
+            if len(debug["examples_not_in_model_info"]) < 10:
+                debug["examples_not_in_model_info"].append({"file": name, "model_id": mid})
             continue
         super_cat = str(info.get("super-category", "")).strip().lower()
         if super_cat != "lighting":
+            debug["num_not_lighting"] += 1
+            if len(debug["examples_not_lighting"]) < 10:
+                debug["examples_not_lighting"].append(
+                    {"file": name, "model_id": mid, "super-category": info.get("super-category"), "category": info.get("category")}
+                )
             continue
 
         lamp_instances.append(
@@ -310,8 +352,9 @@ def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict])
             }
         )
         lamp_idx += 1
+        debug["num_lighting_detected"] += 1
 
-    return all_meshes, lamp_instances
+    return all_meshes, lamp_instances, debug
 
 
 def room_scene_name(front_room_root: str, room_dir: str):
@@ -352,10 +395,18 @@ def main():
         os.makedirs(out_room, exist_ok=True)
 
         print(f"[{r_i + 1}/{len(rooms)}] room={scene_name}")
-        meshes, lamp_instances = import_room_and_detect_lamps(room_dir, model_info)
+        meshes, lamp_instances, room_debug = import_room_and_detect_lamps(room_dir, model_info)
         if not meshes:
             print("  -> skip: no mesh imported")
             continue
+        print(
+            "  -> detect:"
+            f" obj={room_debug['num_obj_files']}"
+            f" lighting={room_debug['num_lighting_detected']}"
+            f" mid_missing={room_debug['num_mid_missing']}"
+            f" mid_not_found={room_debug['num_mid_not_in_model_info']}"
+            f" not_lighting={room_debug['num_not_lighting']}"
+        )
 
         bmin, bmax = obj_world_bounds(meshes)
         room_center = Vector(((bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5, (bmin.z + bmax.z) * 0.5))
@@ -373,6 +424,8 @@ def main():
 
         with open(os.path.join(out_room, "lights.json"), "w", encoding="utf-8") as f:
             json.dump(lights_meta, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(out_room, "detect_debug.json"), "w", encoding="utf-8") as f:
+            json.dump(room_debug, f, ensure_ascii=False, indent=2)
 
         renders_meta = []
 
@@ -442,4 +495,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
