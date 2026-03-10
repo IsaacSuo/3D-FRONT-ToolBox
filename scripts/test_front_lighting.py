@@ -294,6 +294,8 @@ def get_or_create_preview_material():
     return mat
 
 def render_preview_still(path: str, preview_mat):
+    if preview_mat is None or preview_mat.name not in bpy.data.materials:
+        preview_mat = get_or_create_preview_material()
     scene = bpy.context.scene
     layer = scene.view_layers[0]
     old_override = layer.material_override
@@ -417,13 +419,15 @@ def main():
         "num_rooms": len(rooms),
         "rooms": [],
     }
-    preview_mat = get_or_create_preview_material() if args.preview_images else None
+    preview_mat = None
 
     for r_i, room_dir in enumerate(rooms):
         clear_scene()
         setup_cycles(args)
         setup_world(args.world_strength)
         cam = ensure_camera()
+        if args.preview_images:
+            preview_mat = get_or_create_preview_material()
 
         scene_name = room_scene_name(args.front_room_root, room_dir)
         out_room = os.path.join(args.output, scene_name)
