@@ -6,6 +6,8 @@ except Exception:
 import math
 import numpy as np
 import urllib.request
+import shutil
+import hashlib
 
 def rotation_matrix(axis, theta):
     axis = np.asarray(axis)
@@ -132,6 +134,30 @@ def quadrilateral2triangle(filepath):
     fid_obj.close()
     fid_tri_obj.close()
 
+def _localize_texture(texture_path, dst_dir, prefix='tex'):
+    """
+    Copy texture to destination directory and return local filename.
+    Returns None if source texture is unavailable.
+    """
+    if not texture_path:
+        return None
+    src = str(texture_path).strip()
+    if not src:
+        return None
+
+    if not os.path.isabs(src):
+        src = os.path.abspath(src)
+    if not os.path.isfile(src):
+        return None
+
+    base = os.path.basename(src)
+    key = hashlib.md5(src.encode('utf-8', errors='ignore')).hexdigest()[:8]
+    local_name = f"{prefix}_{key}_{base}"
+    dst = os.path.join(dst_dir, local_name)
+    if not os.path.exists(dst):
+        shutil.copy2(src, dst)
+    return local_name
+
 def save_obj(ori_obj_path, savepath, v, model_id):
 
     obj_dir_path = os.path.dirname(ori_obj_path)
@@ -161,16 +187,26 @@ def save_obj(ori_obj_path, savepath, v, model_id):
         return
 
 
-    fid_obj = open(obj_dir_path+'/model.mtl', 'r', encoding='utf-8',errors='ignore')
-    fid_save_obj = open(save_dir+'/'+model_id+'.mtl', 'w', encoding='utf-8')
-    alllines = fid_obj.readlines()
-    idx = 0
-    for line in alllines:
-        line = line.replace('./texture.png', obj_dir_path.replace('\\','/')+'/texture.png')
-        fid_save_obj.write(line)
+    src_mtl = os.path.join(obj_dir_path, 'model.mtl')
+    dst_mtl = os.path.join(save_dir, model_id + '.mtl')
+    src_tex = os.path.join(obj_dir_path, 'texture.png')
+    local_tex = _localize_texture(src_tex, save_dir, prefix=model_id)
 
-    fid_obj.close()
-    fid_save_obj.close()
+    with open(src_mtl, 'r', encoding='utf-8', errors='ignore') as fid_obj, \
+         open(dst_mtl, 'w', encoding='utf-8') as fid_save_obj:
+        for line in fid_obj:
+            s = line.strip()
+            if s.startswith('map_Ka '):
+                # Blender OBJ importer often warns that map_Ka is unsupported.
+                continue
+            if s.startswith('map_Kd '):
+                if local_tex is not None:
+                    fid_save_obj.write('map_Kd ' + local_tex + '\n')
+                else:
+                    # fallback: keep model default relative texture reference
+                    fid_save_obj.write('map_Kd ./texture.png\n')
+                continue
+            fid_save_obj.write(line)
 
 
 def read_obj(filepath):
@@ -229,7 +265,12 @@ def save_mesh(savepath, filename, *args):
         if type(texture) == list:
             mtl_fid.write('Kd '+str(texture[0]/255.)+' '+str(texture[1]/255.)+' '+str(texture[2]/255.)+'\n')
         else:
-            mtl_fid.write('map_Kd '+texture+'\n')
+            local_tex = _localize_texture(texture, savepath, prefix='mesh')
+            if local_tex is not None:
+                mtl_fid.write('map_Kd '+local_tex+'\n')
+            else:
+                # Keep original path only if source texture is missing.
+                mtl_fid.write('map_Kd '+str(texture)+'\n')
         fid.write('usemtl '+str(mesh_id)+'\n')
         for f in faces:
             if type(texture) == list:

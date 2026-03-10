@@ -142,6 +142,88 @@ def setup_world(strength: float):
 
 
 def import_obj(filepath: str) -> List[bpy.types.Object]:
+    def _read_mtl_texture_map(obj_path: str) -> Dict[str, str]:
+        obj_path = os.path.abspath(obj_path)
+        obj_dir = os.path.dirname(obj_path)
+        mtllib = None
+        try:
+            with open(obj_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip()
+                    if s.lower().startswith("mtllib "):
+                        mtllib = s.split(None, 1)[1].strip()
+                        break
+        except Exception:
+            return {}
+        if not mtllib:
+            return {}
+        mtl_path = os.path.join(obj_dir, mtllib)
+        if not os.path.isfile(mtl_path):
+            return {}
+
+        tex_map = {}
+        cur_mtl = None
+        try:
+            with open(mtl_path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    if s.lower().startswith("newmtl "):
+                        cur_mtl = s.split(None, 1)[1].strip()
+                        continue
+                    if cur_mtl and s.lower().startswith("map_kd "):
+                        raw = s.split(None, 1)[1].strip()
+                        # handle simple map options by taking last token as path
+                        tex = raw.split()[-1]
+                        tex = tex.replace("\\", "/")
+                        tex_path = tex if os.path.isabs(tex) else os.path.normpath(os.path.join(obj_dir, tex))
+                        tex_map[cur_mtl] = tex_path
+        except Exception:
+            return {}
+        return tex_map
+
+    def _bind_textures(imported_objs: List[bpy.types.Object], tex_map: Dict[str, str]):
+        if not tex_map:
+            return
+        for obj in imported_objs:
+            for slot in obj.material_slots:
+                mat = slot.material
+                if mat is None:
+                    continue
+                mname = mat.name
+                tex_path = tex_map.get(mname)
+                if tex_path is None and "." in mname and mname.rsplit(".", 1)[1].isdigit():
+                    tex_path = tex_map.get(mname.rsplit(".", 1)[0])
+                if not tex_path or not os.path.isfile(tex_path):
+                    continue
+
+                if not mat.use_nodes:
+                    mat.use_nodes = True
+                nodes = mat.node_tree.nodes
+                links = mat.node_tree.links
+
+                bsdf = None
+                for n in nodes:
+                    if n.type == "BSDF_PRINCIPLED":
+                        bsdf = n
+                        break
+                if bsdf is None:
+                    bsdf = nodes.new(type="ShaderNodeBsdfPrincipled")
+                    out = None
+                    for n in nodes:
+                        if n.type == "OUTPUT_MATERIAL":
+                            out = n
+                            break
+                    if out is None:
+                        out = nodes.new(type="ShaderNodeOutputMaterial")
+                    links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+                tex_node = nodes.new(type="ShaderNodeTexImage")
+                tex_node.image = bpy.data.images.load(tex_path, check_existing=True)
+                links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+    tex_map = _read_mtl_texture_map(filepath)
     scene = bpy.context.scene
     before = set(o.name for o in scene.objects)
     # Blender 5 `wm.obj_import` may resolve absolute MTL texture paths incorrectly
@@ -156,7 +238,9 @@ def import_obj(filepath: str) -> List[bpy.types.Object]:
     if not imported_ok:
         bpy.ops.wm.obj_import(filepath=filepath)
     after = set(o.name for o in scene.objects)
-    return [scene.objects[n] for n in (after - before) if scene.objects[n].type == "MESH"]
+    imported_meshes = [scene.objects[n] for n in (after - before) if scene.objects[n].type == "MESH"]
+    _bind_textures(imported_meshes, tex_map)
+    return imported_meshes
 
 
 def obj_world_bounds(objs: List[bpy.types.Object]) -> Tuple[Vector, Vector]:
