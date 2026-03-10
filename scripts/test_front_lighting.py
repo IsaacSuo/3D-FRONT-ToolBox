@@ -219,9 +219,22 @@ def import_obj(filepath: str) -> List[bpy.types.Object]:
                         out = nodes.new(type="ShaderNodeOutputMaterial")
                     links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 
-                tex_node = nodes.new(type="ShaderNodeTexImage")
+                # Reuse existing image texture node if possible to avoid node bloat.
+                tex_node = None
+                for n in nodes:
+                    if n.type == "TEX_IMAGE":
+                        tex_node = n
+                        break
+                if tex_node is None:
+                    tex_node = nodes.new(type="ShaderNodeTexImage")
                 tex_node.image = bpy.data.images.load(tex_path, check_existing=True)
-                links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
+
+                # Replace old Base Color links with this texture.
+                base_input = bsdf.inputs.get("Base Color")
+                if base_input is not None:
+                    for lk in list(base_input.links):
+                        links.remove(lk)
+                    links.new(tex_node.outputs["Color"], base_input)
 
     tex_map = _read_mtl_texture_map(filepath)
     scene = bpy.context.scene

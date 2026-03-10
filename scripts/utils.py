@@ -158,6 +158,20 @@ def _localize_texture(texture_path, dst_dir, prefix='tex'):
         shutil.copy2(src, dst)
     return local_name
 
+def _parse_map_texture_path(line):
+    """
+    Parse texture path from a map_K* line.
+    MTL options are ignored; we take the last token as file path.
+    """
+    s = line.strip()
+    parts = s.split(None, 1)
+    if len(parts) < 2:
+        return None
+    raw = parts[1].strip()
+    if not raw:
+        return None
+    return raw.split()[-1]
+
 def save_obj(ori_obj_path, savepath, v, model_id):
 
     obj_dir_path = os.path.dirname(ori_obj_path)
@@ -189,9 +203,6 @@ def save_obj(ori_obj_path, savepath, v, model_id):
 
     src_mtl = os.path.join(obj_dir_path, 'model.mtl')
     dst_mtl = os.path.join(save_dir, model_id + '.mtl')
-    src_tex = os.path.join(obj_dir_path, 'texture.png')
-    local_tex = _localize_texture(src_tex, save_dir, prefix=model_id)
-
     with open(src_mtl, 'r', encoding='utf-8', errors='ignore') as fid_obj, \
          open(dst_mtl, 'w', encoding='utf-8') as fid_save_obj:
         for line in fid_obj:
@@ -200,11 +211,16 @@ def save_obj(ori_obj_path, savepath, v, model_id):
                 # Blender OBJ importer often warns that map_Ka is unsupported.
                 continue
             if s.startswith('map_Kd '):
+                tex_token = _parse_map_texture_path(line)
+                tex_abs = None
+                if tex_token:
+                    tex_abs = tex_token if os.path.isabs(tex_token) else os.path.normpath(os.path.join(obj_dir_path, tex_token))
+                local_tex = _localize_texture(tex_abs, save_dir, prefix=model_id) if tex_abs else None
                 if local_tex is not None:
                     fid_save_obj.write('map_Kd ' + local_tex + '\n')
                 else:
-                    # fallback: keep model default relative texture reference
-                    fid_save_obj.write('map_Kd ./texture.png\n')
+                    # fallback: keep original line if source texture cannot be resolved.
+                    fid_save_obj.write(line)
                 continue
             fid_save_obj.write(line)
 
