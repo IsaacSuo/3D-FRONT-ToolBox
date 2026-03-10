@@ -144,10 +144,17 @@ def setup_world(strength: float):
 def import_obj(filepath: str) -> List[bpy.types.Object]:
     scene = bpy.context.scene
     before = set(o.name for o in scene.objects)
-    try:
+    # Blender 5 `wm.obj_import` may resolve absolute MTL texture paths incorrectly
+    # in some environments. Prefer legacy importer first if available.
+    imported_ok = False
+    if hasattr(bpy.ops, "import_scene") and hasattr(bpy.ops.import_scene, "obj"):
+        try:
+            bpy.ops.import_scene.obj(filepath=filepath)
+            imported_ok = True
+        except Exception:
+            imported_ok = False
+    if not imported_ok:
         bpy.ops.wm.obj_import(filepath=filepath)
-    except Exception:
-        bpy.ops.import_scene.obj(filepath=filepath)
     after = set(o.name for o in scene.objects)
     return [scene.objects[n] for n in (after - before) if scene.objects[n].type == "MESH"]
 
@@ -277,7 +284,7 @@ def render_still(path: str):
     bpy.ops.render.render(write_still=True)
 
 def get_or_create_preview_material():
-    name = "__PreviewEmissionWhite__"
+    name = "__PreviewClay__"
     mat = bpy.data.materials.get(name)
     if mat:
         return mat
@@ -287,10 +294,14 @@ def get_or_create_preview_material():
     links = mat.node_tree.links
     nodes.clear()
     out = nodes.new(type="ShaderNodeOutputMaterial")
-    em = nodes.new(type="ShaderNodeEmission")
-    em.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    em.inputs["Strength"].default_value = 1.0
-    links.new(em.outputs["Emission"], out.inputs["Surface"])
+    bsdf = nodes.new(type="ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = (0.72, 0.72, 0.72, 1.0)
+    bsdf.inputs["Roughness"].default_value = 1.0
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0.0
+    elif "Specular" in bsdf.inputs:
+        bsdf.inputs["Specular"].default_value = 0.0
+    links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
 def render_preview_still(path: str, preview_mat):
@@ -301,12 +312,23 @@ def render_preview_still(path: str, preview_mat):
     old_override = layer.material_override
     old_engine = scene.render.engine
     old_samples = scene.cycles.samples
+    old_world_strength = None
     try:
         layer.material_override = preview_mat
         scene.render.engine = "CYCLES"
         scene.cycles.samples = min(32, max(1, old_samples))
+        # Use bright ambient world for light-independent geometry preview.
+        if scene.world and scene.world.use_nodes:
+            bg = scene.world.node_tree.nodes.get("Background")
+            if bg and "Strength" in bg.inputs:
+                old_world_strength = bg.inputs["Strength"].default_value
+                bg.inputs["Strength"].default_value = max(1.0, old_world_strength)
         render_still(path)
     finally:
+        if old_world_strength is not None and scene.world and scene.world.use_nodes:
+            bg = scene.world.node_tree.nodes.get("Background")
+            if bg and "Strength" in bg.inputs:
+                bg.inputs["Strength"].default_value = old_world_strength
         layer.material_override = old_override
         scene.render.engine = old_engine
         scene.cycles.samples = old_samples
