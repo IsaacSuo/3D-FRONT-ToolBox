@@ -27,6 +27,11 @@ from typing import Dict, List, Tuple
 import bpy
 from mathutils import Vector
 
+# Ensure sibling script imports work under Blender `-P` regardless of launch cwd.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 from find_placement_surface import find_best_surface_result
 
 
@@ -745,13 +750,8 @@ def main():
         )
 
         bmin, bmax = obj_world_bounds(meshes)
-        room_center = Vector(((bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5, (bmin.z + bmax.z) * 0.5))
         h_axes = [0, 1, 2]
         h_axes.remove(up_idx)
-        room_radius = max(
-            get_comp(bmax, h_axes[0]) - get_comp(bmin, h_axes[0]),
-            get_comp(bmax, h_axes[1]) - get_comp(bmin, h_axes[1]),
-        ) * 0.6
         room_floor = get_comp(bmin, up_idx)
         room_h = max(2.0, get_comp(bmax, up_idx) - get_comp(bmin, up_idx))
 
@@ -772,12 +772,23 @@ def main():
         with open(os.path.join(out_room, "placement_surface.json"), "w", encoding="utf-8") as f:
             json.dump(placement_result, f, ensure_ascii=False, indent=2)
 
-        if best_surface is not None:
-            target_center = Vector(best_surface.get("placement_center", best_surface["centroid"]))
-            target_diameter = float(best_surface["target_diameter"])
-        else:
-            target_center = room_center
-            target_diameter = max(0.5, min(1.0, room_radius * 0.5))
+        if best_surface is None:
+            print("  -> stop room: no feasible best surface")
+            summary["rooms"].append(
+                {
+                    "room": scene_name,
+                    "room_dir": room_dir,
+                    "status": "skipped_no_best_surface",
+                }
+            )
+            if len(rooms) == 1:
+                print("  -> stop: single specified room has no feasible best surface")
+                break
+            print("  -> continue: try next room")
+            continue
+
+        target_center = Vector(best_surface.get("placement_center", best_surface["centroid"]))
+        target_diameter = float(best_surface["target_diameter"])
 
         center_view = set_comp(target_center, up_idx, max(room_floor + 0.5, min(get_comp(target_center, up_idx), room_floor + room_h - 0.2)))
         safe_distance_3d = compute_safe_distance_3d(cam, args.res_x, args.res_y, target_diameter, args.camera_margin)
