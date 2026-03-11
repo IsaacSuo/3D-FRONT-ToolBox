@@ -535,6 +535,38 @@ def _min_surface_distance(point: Vector, objs: List[bpy.types.Object], depsgraph
             continue
     return min_dist
 
+def _segment_blocked_by_shell(start: Vector, end: Vector, shell_objs: List[bpy.types.Object], depsgraph, eps: float = 1e-3) -> bool:
+    """
+    Return True if segment start->end hits shell geometry before reaching end.
+    """
+    vec = end - start
+    seg_len = vec.length
+    if seg_len <= eps:
+        return False
+    direction = vec.normalized()
+    origin = start + direction * eps
+    max_dist = max(0.0, seg_len - eps * 2.0)
+    if max_dist <= 0:
+        return False
+
+    for obj in shell_objs:
+        eval_obj = obj.evaluated_get(depsgraph)
+        if eval_obj.type != "MESH":
+            continue
+        try:
+            inv = eval_obj.matrix_world.inverted()
+            o_local = inv @ origin
+            # direction is vector; use inverse 3x3 for local transform.
+            d_local = (inv.to_3x3() @ direction).normalized()
+            hit, loc, _normal, _face = eval_obj.ray_cast(o_local, d_local, distance=max_dist)
+            if hit:
+                hit_dist = (eval_obj.matrix_world @ loc - origin).length
+                if hit_dist < max_dist - eps:
+                    return True
+        except Exception:
+            continue
+    return False
+
 
 def _fit_camera_points(points: List[Vector], center: Vector, shell_objs: List[bpy.types.Object], clearance: float = 0.12):
     """
@@ -546,7 +578,11 @@ def _fit_camera_points(points: List[Vector], center: Vector, shell_objs: List[bp
         cur = Vector((p.x, p.y, p.z))
         for _ in range(30):
             d = _min_surface_distance(cur, shell_objs, depsgraph)
-            if d >= clearance:
+            blocked = _segment_blocked_by_shell(cur, center, shell_objs, depsgraph)
+            # Must satisfy both:
+            # 1) not embedded in shell
+            # 2) line of sight to room center is not blocked by shell (outside-wall points fail here)
+            if d >= clearance and not blocked:
                 break
             cur = center.lerp(cur, 0.85)  # move 15% toward center
         fitted.append(cur)
