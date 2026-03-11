@@ -143,9 +143,9 @@ def find_placement_surface(
     up_axis: str = "Z",
     ray_grid_step: float = 0.18,
     wall_margin: float = 0.12,
-    max_tilt_deg: float = 10.0,
+    max_tilt_deg: float = 20.0,
     hemisphere_rays: int = 96,
-    ray_max: float = 8.0,
+    ray_max: float = 1.0,
     voxel_size: float = 0.08,
     min_safe_radius: float = 0.10,
 ) -> Dict:
@@ -215,6 +215,10 @@ def find_placement_surface(
                 dist = (Vector(loc) - o).length
                 if dist < min_dist:
                     min_dist = dist
+                    # Early break: already below minimum safe threshold,
+                    # this candidate will be rejected anyway.
+                    if min_dist < float(min_safe_radius):
+                        break
         if min_dist < float(min_safe_radius):
             reject_too_tight += 1
             continue
@@ -338,4 +342,3 @@ def find_best_surface_result(
     base["best_surface"] = best
     base["top_candidates"] = tops
     return base
-
