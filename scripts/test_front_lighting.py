@@ -58,6 +58,7 @@ def parse_args():
     p.add_argument("--lens", type=float, default=50.0)
     p.add_argument("--samples", type=int, default=512)
     p.add_argument("--preview-images", action="store_true", help="also render light-independent preview images")
+    p.add_argument("--preview-center-views", type=int, default=4, help="extra preview views around room center")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="GPU", choices=["GPU", "CPU"])
     p.add_argument("--gpu-backend", default="CUDA", choices=["CUDA", "OPTIX", "HIP", "METAL", "ONEAPI"])
@@ -867,6 +868,39 @@ def main():
                     "type": "global",
                     "path": os.path.relpath(img_path, out_room),
                     "camera_pos": [cam.location.x, cam.location.y, cam.location.z],
+                        "camera_matrix_world": [list(row) for row in cam.matrix_world],
+                    }
+                )
+
+        # 2) Optional room-center preview views (light-independent clay).
+        if preview_mat is not None and int(args.preview_center_views) > 0:
+            room_center = Vector((
+                (bmin.x + bmax.x) * 0.5,
+                (bmin.y + bmax.y) * 0.5,
+                (bmin.z + bmax.z) * 0.5,
+            ))
+            room_span = max(
+                0.5,
+                float(max(bmax.x - bmin.x, bmax.y - bmin.y, bmax.z - bmin.z)),
+            )
+            center_radius = max(0.8, room_span * 0.35)
+            c_points = generate_fibonacci_points_world(
+                n_samples=int(args.preview_center_views),
+                radius=center_radius,
+                center_loc=room_center,
+                up_idx=up_idx,
+                hemisphere=True,
+            )
+            for i, p in enumerate(c_points):
+                cam.location = p
+                look_at(cam, room_center)
+                prev_path = os.path.join(out_room, "room_center_preview", f"{i:03d}.png")
+                render_preview_still(prev_path, preview_mat)
+                renders_meta.append(
+                    {
+                        "type": "room_center_preview",
+                        "path": os.path.relpath(prev_path, out_room),
+                        "camera_pos": [cam.location.x, cam.location.y, cam.location.z],
                         "camera_matrix_world": [list(row) for row in cam.matrix_world],
                     }
                 )
