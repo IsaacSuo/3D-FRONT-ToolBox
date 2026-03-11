@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument("--camera-margin", type=float, default=1.35)
     p.add_argument("--camera-furniture-clearance", type=float, default=0.15)
     p.add_argument("--wall-margin", type=float, default=0.12)
-    p.add_argument("--min-area", type=float, default=0.02)
+    p.add_argument("--min-area", type=float, default=0.0)
     p.add_argument("--height-bin", type=float, default=0.02)
     p.add_argument("--max-tilt-deg", type=float, default=10.0)
     p.add_argument("--require-all-cameras", action="store_true", default=True)
@@ -288,9 +288,12 @@ def room_clearance(p3, room_min_c, room_max_c):
     return float(np.min(np.minimum(p - room_min_c, room_max_c - p)))
 
 
-def generate_fibonacci_points(n_samples, radius, center_loc, hemisphere=True):
+def generate_fibonacci_points_world(n_samples, radius, center_loc, up_idx, hemisphere=True):
     points = []
     phi = math.pi * (3.0 - math.sqrt(5.0))
+    h_axes = [0, 1, 2]
+    h_axes.remove(up_idx)
+    a0, a1 = h_axes
     for i in range(n_samples):
         safe_n = n_samples - 1 if n_samples > 1 else 1
         z = 1 - (i / safe_n) if hemisphere else 1 - (i / safe_n) * 2
@@ -299,7 +302,11 @@ def generate_fibonacci_points(n_samples, radius, center_loc, hemisphere=True):
         x = math.cos(theta) * radius_at_z
         y = math.sin(theta) * radius_at_z
         z_world = z * radius
-        points.append(np.array([x, y, z_world], dtype=np.float64) + center_loc)
+        arr = np.asarray(center_loc, dtype=np.float64).copy()
+        arr[a0] += x
+        arr[a1] += y
+        arr[up_idx] += z_world
+        points.append(arr)
     return points
 
 
@@ -378,6 +385,7 @@ def estimate_dmax(candidate, place_point, room_min_c, room_max_c, up_idx, anchor
     max2 = np.array([c3[a0] + span[0] * 0.5, c3[a1] + span[1] * 0.5], dtype=np.float64)
     p2 = np.array([place_point[a0], place_point[a1]], dtype=np.float64)
 
+    # Keep support span as a soft cap (very fragmented support can under-estimate).
     d_support = 2.0 * float(min(p2[0] - min2[0], max2[0] - p2[0], p2[1] - min2[1], max2[1] - p2[1]))
     d_room_xy = 2.0 * float(min(
         place_point[a0] - room_min_c[a0], room_max_c[a0] - place_point[a0],
@@ -394,14 +402,15 @@ def estimate_dmax(candidate, place_point, room_min_c, room_max_c, up_idx, anchor
     if abs(r - 0.5) > 1e-6 and (r - 0.5) > 0:
         d_up = min(d_up, (p_up - lo) / (r - 0.5))
 
-    return max(0.0, float(min(d_support, d_room_xy, d_up)))
+    # Relax support cap by allowing larger diameter guided by room bounds.
+    return max(0.0, float(min(max(d_support, 0.6 * d_room_xy), d_room_xy, d_up)))
 
 
 def camera_feasible(anchor_center, td, room_min_c, room_max_c, up_idx, num_views, use_hemisphere, camera_margin, furniture_clearance, df_pack, lens, sensor_width, res_x, res_y, require_all_cameras):
     fov_h, fov_v = compute_fov(lens, sensor_width, res_x, res_y)
     narrow = max(1e-6, min(fov_h, fov_v))
     radius = (0.5 * td * camera_margin) / math.sin(narrow * 0.5)
-    pts = generate_fibonacci_points(num_views, radius, np.asarray(anchor_center, dtype=np.float64), hemisphere=use_hemisphere)
+    pts = generate_fibonacci_points_world(num_views, radius, np.asarray(anchor_center, dtype=np.float64), up_idx=up_idx, hemisphere=use_hemisphere)
 
     ok = 0
     coll = 0
