@@ -17,6 +17,7 @@ import json
 import math
 import argparse
 from collections import defaultdict
+from collections import deque
 
 import numpy as np
 
@@ -270,6 +271,77 @@ def collect_furniture_aabbs(room_dir: str):
     return boxes
 
 
+def build_voxel_occupancy(room_min: np.ndarray, room_max: np.ndarray, furniture_aabbs, voxel_size: float):
+    vs = max(1e-3, float(voxel_size))
+    room_min = np.asarray(room_min, dtype=np.float64)
+    room_max = np.asarray(room_max, dtype=np.float64)
+    dims = np.maximum(1, np.ceil((room_max - room_min) / vs).astype(np.int64) + 1)
+    occ = np.zeros((int(dims[0]), int(dims[1]), int(dims[2])), dtype=np.uint8)
+
+    def _to_idx(p):
+        g = np.floor((p - room_min) / vs).astype(np.int64)
+        return np.clip(g, 0, dims - 1)
+
+    for _name, bmin, bmax in furniture_aabbs:
+        lo = _to_idx(np.asarray(bmin, dtype=np.float64))
+        hi = _to_idx(np.asarray(bmax, dtype=np.float64))
+        occ[lo[0] : hi[0] + 1, lo[1] : hi[1] + 1, lo[2] : hi[2] + 1] = 1
+
+    return {
+        "origin": room_min,
+        "voxel": vs,
+        "dims": dims,
+        "occ": occ,
+    }
+
+
+def distance_field_from_occupancy(occ: np.ndarray, voxel_size: float):
+    # 6-neighbor brushfire distance (L1 metric in voxel grid) as a robust 3D clearance proxy.
+    inf = np.int32(2**30 - 1)
+    dist = np.full(occ.shape, inf, dtype=np.int32)
+    q = deque()
+    occ_idx = np.argwhere(occ > 0)
+    for i, j, k in occ_idx:
+        dist[i, j, k] = 0
+        q.append((int(i), int(j), int(k)))
+
+    if not q:
+        # No occupied voxel: treat as very large clearance.
+        return np.full(occ.shape, 1e9, dtype=np.float64)
+
+    sx, sy, sz = occ.shape
+    neigh = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    while q:
+        x, y, z = q.popleft()
+        nd = dist[x, y, z] + 1
+        for dx, dy, dz in neigh:
+            nx, ny, nz = x + dx, y + dy, z + dz
+            if nx < 0 or ny < 0 or nz < 0 or nx >= sx or ny >= sy or nz >= sz:
+                continue
+            if nd < dist[nx, ny, nz]:
+                dist[nx, ny, nz] = nd
+                q.append((nx, ny, nz))
+    return dist.astype(np.float64) * float(voxel_size)
+
+
+def query_distance_field(df_pack, p3: np.ndarray):
+    origin = df_pack["origin"]
+    vs = float(df_pack["voxel"])
+    dims = df_pack["dims"]
+    df = df_pack["df"]
+    g = np.floor((np.asarray(p3, dtype=np.float64) - origin) / vs).astype(np.int64)
+    if np.any(g < 0) or np.any(g >= dims):
+        return 0.0
+    return float(df[int(g[0]), int(g[1]), int(g[2])])
+
+
+def room_boundary_clearance(p3: np.ndarray, room_min_c: np.ndarray, room_max_c: np.ndarray) -> float:
+    p = np.asarray(p3, dtype=np.float64)
+    if np.any(p < room_min_c) or np.any(p > room_max_c):
+        return 0.0
+    return float(np.min(np.minimum(p - room_min_c, room_max_c - p)))
+
+
 def point_box_distance_2d(p2: np.ndarray, bmin2: np.ndarray, bmax2: np.ndarray) -> float:
     q = np.maximum(np.maximum(bmin2 - p2, 0.0), p2 - bmax2)
     return float(np.linalg.norm(q))
@@ -447,6 +519,7 @@ def estimate_max_diameter_geom(
     ignore_object_file: str,
     anchor_height_ratio: float,
     extra_margin: float = 0.03,
+    use_furniture_clearance: bool = True,
 ) -> float:
     h_axes = [0, 1, 2]
     h_axes.remove(up_idx)
@@ -472,8 +545,11 @@ def estimate_max_diameter_geom(
     )
 
     # 3) Furniture clearance in XY.
-    min_clear = min_clearance_to_furniture_2d(place_point, furniture_aabbs, up_idx, ignore_object_file)
-    d_furniture = 2.0 * max(0.0, min_clear - extra_margin)
+    if use_furniture_clearance:
+        min_clear = min_clearance_to_furniture_2d(place_point, furniture_aabbs, up_idx, ignore_object_file)
+        d_furniture = 2.0 * max(0.0, min_clear - extra_margin)
+    else:
+        d_furniture = 1e9
 
     # 4) Vertical room constraint for anchor center = place + up * (ratio * d).
     # Require anchor center +/- d/2 inside [room_min_c_up, room_max_c_up].
@@ -513,6 +589,9 @@ def camera_feasible_count(
     safe_distance,
     furniture_aabbs,
     furniture_clearance,
+    df_pack=None,
+    room_min_c=None,
+    room_max_c=None,
 ):
     # Build fibonacci points in canonical XYZ and remap canonical Z->up_idx.
     local_center = np.array([candidate_center[0], candidate_center[1], candidate_center[2]], dtype=np.float64)
@@ -530,11 +609,17 @@ def camera_feasible_count(
             continue
 
         collides = False
-        for _name, bmin, bmax in furniture_aabbs:
-            d = point_to_aabb_distance(p, bmin, bmax)
-            if d < furniture_clearance:
+        if df_pack is not None and room_min_c is not None and room_max_c is not None:
+            c_occ = query_distance_field(df_pack, p)
+            c_room = room_boundary_clearance(p, room_min_c, room_max_c)
+            if min(c_occ, c_room) < furniture_clearance:
                 collides = True
-                break
+        else:
+            for _name, bmin, bmax in furniture_aabbs:
+                d = point_to_aabb_distance(p, bmin, bmax)
+                if d < furniture_clearance:
+                    collides = True
+                    break
         if collides:
             collision += 1
             continue
@@ -576,6 +661,9 @@ def find_best_surface_result(
 
     room_min_c = room_min + wall_margin
     room_max_c = room_max - wall_margin
+    voxel_size = float(max(0.02, min(0.08, target_d_min / 6.0)))
+    vox = build_voxel_occupancy(room_min_c, room_max_c, furniture_aabbs, voxel_size=voxel_size)
+    vox["df"] = distance_field_from_occupancy(vox["occ"], voxel_size=voxel_size)
 
     fov_h, fov_v = compute_fov(lens, sensor_width, res_x, res_y)
     narrow = min(fov_h, fov_v)
@@ -626,6 +714,7 @@ def find_best_surface_result(
                 up_idx=up_idx,
                 ignore_object_file=c.get("support_files", [c["object_file"]]),
                 anchor_height_ratio=anchor_height_ratio,
+                use_furniture_clearance=False,
             )
             if d_max_geom < target_d_min:
                 reject_stats["dmax_below_min"] += 1
@@ -648,6 +737,11 @@ def find_best_surface_result(
                 if np.any(anchor_center < room_min_c) or np.any(anchor_center > room_max_c):
                     hi = mid
                     continue
+                occ_clear = query_distance_field(vox, anchor_center)
+                room_clear = room_boundary_clearance(anchor_center, room_min_c, room_max_c)
+                if min(occ_clear, room_clear) < (0.5 * mid + 0.02):
+                    hi = mid
+                    continue
                 r = mid * 0.5
                 safe_dist = (r * camera_margin) / max(math.sin(narrow * 0.5), 1e-6)
                 ok, total, coll = camera_feasible_count(
@@ -661,11 +755,14 @@ def find_best_surface_result(
                     safe_dist,
                     furniture_aabbs,
                     camera_furniture_clearance,
+                    df_pack=vox,
+                    room_min_c=room_min_c,
+                    room_max_c=room_max_c,
                 )
                 feasible = (ok == total) if require_all_cameras else (ok > 0)
                 if feasible:
                     best_d = mid
-                    best_stats = (ok, total, coll, safe_dist, anchor_center.copy())
+                    best_stats = (ok, total, coll, safe_dist, anchor_center.copy(), float(min(occ_clear, room_clear)))
                     lo = mid
                 else:
                     hi = mid
@@ -674,7 +771,7 @@ def find_best_surface_result(
                 reject_stats["camera_infeasible"] += 1
                 continue
 
-            ok, total, coll, safe_dist, anchor_center = best_stats
+            ok, total, coll, safe_dist, anchor_center, anchor_clear_df = best_stats
             rec = {
                 "object_file": c["object_file"],
                 "centroid": center.tolist(),
@@ -692,6 +789,7 @@ def find_best_surface_result(
                 "camera_ok_ratio": float(ok / max(total, 1)),
                 "camera_collision_count": int(coll),
                 "room_center_dist": float(np.linalg.norm(anchor_center - room_center)),
+                "anchor_clearance_df": float(anchor_clear_df),
             }
             if (best_rec is None) or (
                 (rec["target_diameter"], rec["d_max_geom"], rec["camera_ok"], -rec["room_center_dist"], rec["surface_area"])
@@ -711,6 +809,7 @@ def find_best_surface_result(
         "num_candidates": len(candidates),
         "num_evaluated": len(evals),
         "reject_stats": reject_stats,
+        "voxel_size": voxel_size,
         "best_surface": best,
         "top_candidates": evals[:20],
         "camera_generation": {

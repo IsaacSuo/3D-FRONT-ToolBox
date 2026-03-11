@@ -32,7 +32,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from find_placement_surface import find_best_surface_result
+from find_placement_surface_v2 import find_best_surface_result
 
 
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -720,6 +720,7 @@ def print_surface_debug(result: dict, top_k: int = 8):
         "  -> placement summary:"
         f" candidates={result.get('num_candidates', 0)}"
         f" evaluated={result.get('num_evaluated', 0)}"
+        f" voxel={float(result.get('voxel_size', 0.0)):.3f}"
         f" has_best={best is not None}"
     )
     rs = result.get("reject_stats") or {}
@@ -745,6 +746,7 @@ def print_surface_debug(result: dict, top_k: int = 8):
             f"     {i:02d}) obj={c.get('object_file')} "
             f"d={float(c.get('target_diameter', 0.0)):.3f} "
             f"dmax={float(c.get('d_max_geom', 0.0)):.3f} "
+            f"aclr={float(c.get('anchor_clearance_df', 0.0)):.3f} "
             f"cam={int(c.get('camera_ok', 0))}/{int(c.get('camera_total', 0))} "
             f"area={float(c.get('surface_area', 0.0)):.3f} "
             f"center_dist={float(c.get('room_center_dist', 0.0)):.3f} "
