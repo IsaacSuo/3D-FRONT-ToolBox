@@ -287,6 +287,64 @@ def choose_empty_point_on_surface(
     return best_p, best_score
 
 
+def list_empty_points_on_surface(
+    candidate,
+    room_center: np.ndarray,
+    furniture_aabbs,
+    up_idx: int,
+    ignore_object_file: str,
+    grid_n: int = 21,
+    extra_margin: float = 0.03,
+    top_k: int = 8,
+):
+    """
+    Enumerate feasible placement points on support surface, sorted by
+    (more clearance, closer to room center).
+    """
+    h_axes = [0, 1, 2]
+    h_axes.remove(up_idx)
+    a0, a1 = h_axes
+
+    center3 = np.asarray(candidate["centroid"], dtype=np.float64)
+    span = np.asarray(candidate["surface_span2d"], dtype=np.float64)
+    min2 = np.array([center3[a0] - span[0] * 0.5, center3[a1] - span[1] * 0.5], dtype=np.float64)
+    max2 = np.array([center3[a0] + span[0] * 0.5, center3[a1] + span[1] * 0.5], dtype=np.float64)
+
+    xs = np.linspace(min2[0], max2[0], grid_n)
+    ys = np.linspace(min2[1], max2[1], grid_n)
+    room2 = np.array([room_center[a0], room_center[a1]], dtype=np.float64)
+
+    ranked = []
+    for x in xs:
+        for y in ys:
+            p2 = np.array([x, y], dtype=np.float64)
+            min_clear = 1e18
+            blocked = False
+            for name, bmin3, bmax3 in furniture_aabbs:
+                if name == ignore_object_file:
+                    continue
+                bmin2 = np.array([bmin3[a0], bmin3[a1]], dtype=np.float64)
+                bmax2 = np.array([bmax3[a0], bmax3[a1]], dtype=np.float64)
+                d2 = point_box_distance_2d(p2, bmin2, bmax2)
+                if d2 < extra_margin:
+                    blocked = True
+                    break
+                if d2 < min_clear:
+                    min_clear = d2
+            if blocked:
+                continue
+
+            dist_center = float(np.linalg.norm(p2 - room2))
+            score = (min_clear * 10.0) - dist_center
+            p3 = center3.copy()
+            p3[a0] = p2[0]
+            p3[a1] = p2[1]
+            ranked.append((score, p3))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [(p3, score) for score, p3 in ranked[:max(1, int(top_k))]]
+
+
 def min_clearance_to_furniture_2d(
     p3: np.ndarray,
     furniture_aabbs,
@@ -461,97 +519,106 @@ def find_best_surface_result(
         center = c["centroid"].copy()
         if np.any(center < room_min_c) or np.any(center > room_max_c):
             continue
-        place_point, place_score = choose_empty_point_on_surface(
+        place_candidates = list_empty_points_on_surface(
             candidate={
                 "centroid": center.tolist(),
                 "surface_span2d": [float(c["span2d"][0]), float(c["span2d"][1])],
             },
-            target_diameter=0.0,
             room_center=room_center,
             furniture_aabbs=furniture_aabbs,
             up_idx=up_idx,
             ignore_object_file=c["object_file"],
+            grid_n=21,
+            top_k=10,
         )
-        if place_point is None:
+        if not place_candidates:
             continue
-
-        d_max_geom = estimate_max_diameter_geom(
-            candidate={
-                "centroid": center.tolist(),
-                "surface_span2d": [float(c["span2d"][0]), float(c["span2d"][1])],
-            },
-            place_point=place_point,
-            room_min_c=room_min_c,
-            room_max_c=room_max_c,
-            furniture_aabbs=furniture_aabbs,
-            up_idx=up_idx,
-            ignore_object_file=c["object_file"],
-            anchor_height_ratio=anchor_height_ratio,
-        )
-        if d_max_geom < target_d_min:
-            continue
-
-        d_hi = min(float(target_d_max), float(d_max_geom) * float(diameter_alpha))
-        if d_hi < target_d_min:
-            continue
-
-        # Find largest camera-feasible diameter with binary search.
-        lo = float(target_d_min)
-        hi = float(d_hi)
-        best_d = None
-        best_stats = None
-        for _ in range(14):
-            mid = 0.5 * (lo + hi)
-            anchor_center = place_point.copy()
-            anchor_center[up_idx] += float(mid) * float(anchor_height_ratio)
-            if np.any(anchor_center < room_min_c) or np.any(anchor_center > room_max_c):
-                hi = mid
-                continue
-            r = mid * 0.5
-            safe_dist = (r * camera_margin) / max(math.sin(narrow * 0.5), 1e-6)
-            ok, total, coll = camera_feasible_count(
-                anchor_center,
-                mid,
-                room_min_c,
-                room_max_c,
-                up_idx,
-                num_views,
-                use_hemisphere,
-                safe_dist,
-                furniture_aabbs,
-                camera_furniture_clearance,
+        best_rec = None
+        for place_point, place_score in place_candidates:
+            d_max_geom = estimate_max_diameter_geom(
+                candidate={
+                    "centroid": center.tolist(),
+                    "surface_span2d": [float(c["span2d"][0]), float(c["span2d"][1])],
+                },
+                place_point=place_point,
+                room_min_c=room_min_c,
+                room_max_c=room_max_c,
+                furniture_aabbs=furniture_aabbs,
+                up_idx=up_idx,
+                ignore_object_file=c["object_file"],
+                anchor_height_ratio=anchor_height_ratio,
             )
-            feasible = (ok == total) if require_all_cameras else (ok > 0)
-            if feasible:
-                best_d = mid
-                best_stats = (ok, total, coll, safe_dist, anchor_center.copy())
-                lo = mid
-            else:
-                hi = mid
+            if d_max_geom < target_d_min:
+                continue
 
-        if best_d is None:
-            continue
+            d_hi = min(float(target_d_max), float(d_max_geom) * float(diameter_alpha))
+            if d_hi < target_d_min:
+                continue
 
-        ok, total, coll, safe_dist, anchor_center = best_stats
-        rec = {
-            "object_file": c["object_file"],
-            "centroid": center.tolist(),
-            "placement_center": place_point.tolist(),
-            "anchor_center": anchor_center.tolist(),
-            "placement_score": float(place_score),
-            "height": float(c["height"]),
-            "surface_area": float(c["area"]),
-            "surface_span2d": [float(c["span2d"][0]), float(c["span2d"][1])],
-            "target_diameter": float(best_d),
-            "d_max_geom": float(d_max_geom),
-            "safe_distance_3d": float(safe_dist),
-            "camera_ok": int(ok),
-            "camera_total": int(total),
-            "camera_ok_ratio": float(ok / max(total, 1)),
-            "camera_collision_count": int(coll),
-            "room_center_dist": float(np.linalg.norm(anchor_center - room_center)),
-        }
-        evals.append(rec)
+            # Find largest camera-feasible diameter with binary search.
+            lo = float(target_d_min)
+            hi = float(d_hi)
+            best_d = None
+            best_stats = None
+            for _ in range(14):
+                mid = 0.5 * (lo + hi)
+                anchor_center = place_point.copy()
+                anchor_center[up_idx] += float(mid) * float(anchor_height_ratio)
+                if np.any(anchor_center < room_min_c) or np.any(anchor_center > room_max_c):
+                    hi = mid
+                    continue
+                r = mid * 0.5
+                safe_dist = (r * camera_margin) / max(math.sin(narrow * 0.5), 1e-6)
+                ok, total, coll = camera_feasible_count(
+                    anchor_center,
+                    mid,
+                    room_min_c,
+                    room_max_c,
+                    up_idx,
+                    num_views,
+                    use_hemisphere,
+                    safe_dist,
+                    furniture_aabbs,
+                    camera_furniture_clearance,
+                )
+                feasible = (ok == total) if require_all_cameras else (ok > 0)
+                if feasible:
+                    best_d = mid
+                    best_stats = (ok, total, coll, safe_dist, anchor_center.copy())
+                    lo = mid
+                else:
+                    hi = mid
+
+            if best_d is None:
+                continue
+
+            ok, total, coll, safe_dist, anchor_center = best_stats
+            rec = {
+                "object_file": c["object_file"],
+                "centroid": center.tolist(),
+                "placement_center": place_point.tolist(),
+                "anchor_center": anchor_center.tolist(),
+                "placement_score": float(place_score),
+                "height": float(c["height"]),
+                "surface_area": float(c["area"]),
+                "surface_span2d": [float(c["span2d"][0]), float(c["span2d"][1])],
+                "target_diameter": float(best_d),
+                "d_max_geom": float(d_max_geom),
+                "safe_distance_3d": float(safe_dist),
+                "camera_ok": int(ok),
+                "camera_total": int(total),
+                "camera_ok_ratio": float(ok / max(total, 1)),
+                "camera_collision_count": int(coll),
+                "room_center_dist": float(np.linalg.norm(anchor_center - room_center)),
+            }
+            if (best_rec is None) or (
+                (rec["target_diameter"], rec["d_max_geom"], rec["camera_ok"], -rec["room_center_dist"], rec["surface_area"])
+                > (best_rec["target_diameter"], best_rec["d_max_geom"], best_rec["camera_ok"], -best_rec["room_center_dist"], best_rec["surface_area"])
+            ):
+                best_rec = rec
+
+        if best_rec is not None:
+            evals.append(best_rec)
 
     evals.sort(key=lambda x: (-x["target_diameter"], -x["d_max_geom"], -x["camera_ok"], x["room_center_dist"], -x["surface_area"]))
     best = evals[0] if evals else None
