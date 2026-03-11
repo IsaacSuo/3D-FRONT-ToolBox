@@ -8,12 +8,30 @@ import shutil
 import hashlib
 from mathutils import Vector, Matrix
 
+try:
+    from find_placement_surface import find_best_surface_result
+except Exception:
+    find_best_surface_result = None
+
 # ==============================================================================
 #                               配置区域
 # ==============================================================================
 
-# Anchor half-size（米）。ANCHOR 立方体边长为 1m，则 half-size=0.5m。
-ANCHOR_HALF_SIZE_M = 0.5
+ANCHOR_PLACEMENT_CONFIG = {
+    # true: 用最佳平面 + 可用空域选择 Anchor；false: 回退房间 bbox 中心。
+    "use_best_surface": True,
+    # 搜索 Anchor 逻辑立方体边长范围（米）
+    "target_d_min": 0.35,
+    "target_d_max": 1.20,
+    "target_d_step": 0.05,
+    # 平面候选与相机可行性约束
+    "wall_margin": 0.12,
+    "min_area": 0.06,
+    "height_bin": 0.02,
+    "max_tilt_deg": 10.0,
+    "camera_margin": 1.35,
+    "camera_furniture_clearance": 0.15,
+}
 
 MATERIAL_CONFIG = {
     # origin / mirror / glass_clear / glass_frosted / glass_tinted / plastic / ceramic / metal_painted / rubber
@@ -449,6 +467,64 @@ def _auto_add_room_lights_from_lamps(room_meshes):
 
     print(f"  -> 自动灯具补光数量: {count}")
 
+
+def _infer_anchor_from_best_surface(room_dir):
+    """
+    Use scripts/find_placement_surface.py to pick anchor center and logical cube size.
+    Returns (anchor_loc: Vector, cube_size_m: float) or (None, None) on failure.
+    """
+    if not ANCHOR_PLACEMENT_CONFIG.get("use_best_surface", True):
+        return None, None
+    if find_best_surface_result is None:
+        print("警告: find_placement_surface 不可用，回退到房间中心 Anchor")
+        return None, None
+
+    try:
+        out = find_best_surface_result(
+            room_dir=room_dir,
+            up_axis="Z",
+            num_views=int(LOGIC_CONFIG.get("num_views", 10)),
+            lens=float(LOGIC_CONFIG.get("lens", 50.0)),
+            res_x=int(RENDER_CONFIG.get("res_x", 1600)),
+            res_y=int(RENDER_CONFIG.get("res_y", 1200)),
+            sensor_width=36.0,
+            use_hemisphere=bool(LOGIC_CONFIG.get("use_hemisphere", True)),
+            target_d_min=float(ANCHOR_PLACEMENT_CONFIG.get("target_d_min", 0.35)),
+            target_d_max=float(ANCHOR_PLACEMENT_CONFIG.get("target_d_max", 1.20)),
+            target_d_step=float(ANCHOR_PLACEMENT_CONFIG.get("target_d_step", 0.05)),
+            camera_margin=float(ANCHOR_PLACEMENT_CONFIG.get("camera_margin", 1.35)),
+            camera_furniture_clearance=float(ANCHOR_PLACEMENT_CONFIG.get("camera_furniture_clearance", 0.15)),
+            wall_margin=float(ANCHOR_PLACEMENT_CONFIG.get("wall_margin", 0.12)),
+            min_area=float(ANCHOR_PLACEMENT_CONFIG.get("min_area", 0.06)),
+            height_bin=float(ANCHOR_PLACEMENT_CONFIG.get("height_bin", 0.02)),
+            max_tilt_deg=float(ANCHOR_PLACEMENT_CONFIG.get("max_tilt_deg", 10.0)),
+        )
+    except Exception as e:
+        print(f"警告: 最佳平面求解失败，回退到房间中心 Anchor: {e}")
+        return None, None
+
+    best = (out or {}).get("best_surface")
+    if not best:
+        print("警告: 未找到可行最佳平面，回退到房间中心 Anchor")
+        return None, None
+
+    p = best.get("placement_center") or best.get("centroid")
+    if not p or len(p) != 3:
+        print("警告: 最佳平面返回中心点无效，回退到房间中心 Anchor")
+        return None, None
+    d = float(best.get("target_diameter", LOGIC_CONFIG.get("target_diameter", 1.0)))
+    if d <= 1e-6:
+        print("警告: 最佳平面返回尺寸无效，回退到房间中心 Anchor")
+        return None, None
+
+    print(
+        "  -> 最佳平面: "
+        f"obj={best.get('object_file')} "
+        f"camera_ok={best.get('camera_ok')}/{best.get('camera_total')} "
+        f"target_d={d:.3f}m"
+    )
+    return Vector((float(p[0]), float(p[1]), float(p[2]))), d
+
 def prepare_scene_from_front_room(room_dir):
     """
     从 json2obj 的房间目录构建当前 Blender 场景，并返回 anchor 对象。
@@ -498,9 +574,21 @@ def prepare_scene_from_front_room(room_dir):
     cx, cy = (bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5
     mid_z = (bmin.z + bmax.z) * 0.5
 
+    best_anchor_loc, best_cube_size_m = _infer_anchor_from_best_surface(room_dir)
+    if best_anchor_loc is not None and best_cube_size_m is not None:
+        anchor_loc = best_anchor_loc
+        cube_size_m = best_cube_size_m
+        mode = "best_surface"
+    else:
+        anchor_loc = Vector((cx, cy, mid_z))
+        cube_size_m = float(LOGIC_CONFIG.get("target_diameter", 1.0))
+        mode = "fallback_target_diameter"
+
     anchor = bpy.data.objects.new(CONFIG_PATHS.get("anchor_name", "ANCHOR"), None)
     scene.collection.objects.link(anchor)
-    anchor.location = Vector((cx, cy, mid_z))
+    anchor.location = anchor_loc
+    anchor["cube_size_m"] = float(cube_size_m)
+    print(f"  -> Anchor 逻辑立方体尺寸: {cube_size_m:.3f}m (mode={mode})")
 
     _auto_add_room_lights_from_lamps(mesh_objs)
     return anchor
@@ -1029,9 +1117,7 @@ def import_and_process_glb(file_path, anchor_obj):
     
     # 1. 解析 Anchor 的几何信息 (世界坐标系)
     anchor_loc = anchor_obj.matrix_world.translation
-    anchor_dim_x = 2.0 * ANCHOR_HALF_SIZE_M
-    anchor_dim_y = 2.0 * ANCHOR_HALF_SIZE_M
-    anchor_dim_z = 2.0 * ANCHOR_HALF_SIZE_M
+    anchor_cube_size = float(anchor_obj.get("cube_size_m", LOGIC_CONFIG.get("target_diameter", 1.0)))
     print(f"  -> 正在导入: {os.path.basename(file_path)} ...")
     
     # 禁用撤销、导入GLB
@@ -1084,10 +1170,8 @@ def import_and_process_glb(file_path, anchor_obj):
     # 1. 归一化原点到几何中心
     bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
     
-    # 2. 将物体移动到 Anchor 的 X,Y 中心，但 Z 轴暂时不动
-    final_obj.location.x = anchor_loc.x
-    final_obj.location.y = anchor_loc.y
-    final_obj.location.z = anchor_loc.z # 先放中间，稍后移动
+    # 2. 先把物体几何中心移动到 Anchor 中心
+    final_obj.location = anchor_loc.copy()
     bpy.context.view_layer.update()
 
     # 3. 智能缩放：让物体“塞进”Anchor 的体积内
@@ -1099,9 +1183,9 @@ def import_and_process_glb(file_path, anchor_obj):
     margin = 1.0
     
     # 防止除以0错误
-    scale_x = (anchor_dim_x * margin) / obj_dim.x if obj_dim.x > 0 else 1
-    scale_y = (anchor_dim_y * margin) / obj_dim.y if obj_dim.y > 0 else 1
-    scale_z = (anchor_dim_z * margin) / obj_dim.z if obj_dim.z > 0 else 1
+    scale_x = (anchor_cube_size * margin) / obj_dim.x if obj_dim.x > 0 else 1
+    scale_y = (anchor_cube_size * margin) / obj_dim.y if obj_dim.y > 0 else 1
+    scale_z = (anchor_cube_size * margin) / obj_dim.z if obj_dim.z > 0 else 1
     
     # 使用最小的缩放比例，保持物体长宽比不变 (Uniform Scale)
     target_scale = min(scale_x, scale_y, scale_z)
@@ -1109,12 +1193,12 @@ def import_and_process_glb(file_path, anchor_obj):
     final_obj.scale *= target_scale
     bpy.ops.object.transform_apply(scale=True)
     
-    # 4. 保持“物体中心”与 Anchor 中心对齐（不再按底面对齐地面）
+    # 4. 将模型挂到 Anchor（Empty）上：Anchor 作为唯一中心控制节点
     bpy.context.view_layer.update()
-    center_offset = anchor_loc.z - final_obj.location.z
-    final_obj.location.z += center_offset
+    final_obj.parent = anchor_obj
+    final_obj.matrix_parent_inverse = anchor_obj.matrix_world.inverted()
 
-    print(f"  -> 已适配 Anchor 尺寸: 缩放倍率 {target_scale:.4f}, 中心位移 {center_offset:.4f}")
+    print(f"  -> 已适配 Anchor 逻辑立方体: size={anchor_cube_size:.3f}m, 缩放倍率 {target_scale:.4f}")
 
     # ==========================================================================
 
@@ -1435,7 +1519,8 @@ def main():
         cam_obj = create_smart_camera(anchor)
         mask_node = setup_compositor_blender_5(bpy.context.scene)
 
-        TARGET_RADIUS = LOGIC_CONFIG["target_diameter"] / 2.0
+        anchor_cube_size = float(anchor.get("cube_size_m", LOGIC_CONFIG["target_diameter"]))
+        TARGET_RADIUS = anchor_cube_size / 2.0
         MARGIN = LOGIC_CONFIG["margin"]
 
         scene = bpy.context.scene
@@ -1450,6 +1535,7 @@ def main():
             center_loc=Vector((0, 0, 0)),
             hemisphere=LOGIC_CONFIG["use_hemisphere"],
         )
+        print(f"  -> 相机半径依据 Anchor 逻辑立方体: size={anchor_cube_size:.3f}m, radius={safe_distance_3d:.3f}m")
 
         scene_output_root = os.path.join(CONFIG_PATHS["output_dir"], scene_name) if len(scene_entries) > 1 else CONFIG_PATHS["output_dir"]
         os.makedirs(scene_output_root, exist_ok=True)
