@@ -141,12 +141,12 @@ def _camera_radius_from_diameter(
 
 def find_placement_surface(
     up_axis: str = "Z",
-    ray_grid_step: float = 0.18,
-    wall_margin: float = 0.12,
-    max_tilt_deg: float = 20.0,
+    ray_grid_step: float = 0.05,
+    wall_margin: float = 0.05,
+    max_tilt_deg: float = 60.0,
     hemisphere_rays: int = 96,
-    ray_max: float = 1.0,
-    voxel_size: float = 0.08,
+    ray_max: float = 8.0,
+    voxel_size: float = 0.04,
     min_safe_radius: float = 0.10,
 ) -> Dict:
     scene = bpy.context.scene
@@ -287,10 +287,10 @@ def find_best_surface_result(
     res_y: int = 1200,
     sensor_width: float = 36.0,
     use_hemisphere: bool = True,
-    target_d_min: float = 0.35,
-    target_d_max: float = 1.20,
+    target_d_min: float = 0.15,
+    target_d_max: float = 0.50,
     target_d_step: float = 0.05,
-    camera_margin: float = 1.35,
+    camera_margin: float = 1.40,
     camera_furniture_clearance: float = 0.15,
     wall_margin: float = 0.12,
     min_area: float = 0.06,
