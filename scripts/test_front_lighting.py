@@ -618,6 +618,14 @@ def room_scene_name(front_room_root: str, room_dir: str):
     return rel.replace(os.sep, "__")
 
 
+def _camera_outside_room_aabb(cam_pos: Vector, bmin: Vector, bmax: Vector, margin: float = 1e-4) -> bool:
+    return (
+        cam_pos.x < bmin.x - margin or cam_pos.x > bmax.x + margin or
+        cam_pos.y < bmin.y - margin or cam_pos.y > bmax.y + margin or
+        cam_pos.z < bmin.z - margin or cam_pos.z > bmax.z + margin
+    )
+
+
 def main():
     args = parse_args()
     random.seed(args.seed)
@@ -637,6 +645,7 @@ def main():
     summary = {
         "front_room_root": os.path.abspath(args.front_room_root),
         "model_info": os.path.abspath(args.model_info),
+        "args": vars(args),
         "num_rooms": len(rooms),
         "rooms": [],
     }
@@ -765,12 +774,26 @@ def main():
         with open(os.path.join(out_room, "renders.json"), "w", encoding="utf-8") as f:
             json.dump(renders_meta, f, ensure_ascii=False, indent=2)
 
+        outside_cnt = 0
+        for r in renders_meta:
+            cp = Vector(r["camera_pos"])
+            if _camera_outside_room_aabb(cp, bmin, bmax):
+                outside_cnt += 1
+        if outside_cnt > 0:
+            print(f"  -> warning: {outside_cnt}/{len(renders_meta)} cameras outside room AABB")
+
         summary["rooms"].append(
             {
                 "room": scene_name,
                 "room_dir": room_dir,
                 "num_lamps_detected": len(lights_meta),
                 "num_images": len(renders_meta),
+                "room_bounds": {
+                    "min": [bmin.x, bmin.y, bmin.z],
+                    "max": [bmax.x, bmax.y, bmax.z],
+                    "up_axis": args.up_axis,
+                },
+                "outside_aabb_camera_count": outside_cnt,
             }
         )
         print(f"  -> lamps={len(lights_meta)} images={len(renders_meta)}")
