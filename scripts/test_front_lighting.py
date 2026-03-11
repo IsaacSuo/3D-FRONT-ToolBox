@@ -433,6 +433,7 @@ def render_preview_still(path: str, preview_mat):
 
 def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict]):
     all_meshes = []
+    shell_meshes = []
     lamp_instances = []
     debug = {
         "room_dir": room_dir,
@@ -460,6 +461,7 @@ def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict])
 
         if name.lower() == "meshes.obj":
             debug["num_meshes_obj"] += 1
+            shell_meshes.extend(imported)
             continue
 
         mid = parse_model_id_from_name(name)
@@ -509,7 +511,46 @@ def import_room_and_detect_lamps(room_dir: str, model_info_map: Dict[str, dict])
         lamp_idx += 1
         debug["num_lighting_detected"] += 1
 
-    return all_meshes, lamp_instances, debug
+    if not shell_meshes:
+        shell_meshes = list(all_meshes)
+    return all_meshes, shell_meshes, lamp_instances, debug
+
+
+def _min_surface_distance(point: Vector, objs: List[bpy.types.Object], depsgraph) -> float:
+    min_dist = float("inf")
+    for obj in objs:
+        eval_obj = obj.evaluated_get(depsgraph)
+        if eval_obj.type != "MESH":
+            continue
+        try:
+            p_local = eval_obj.matrix_world.inverted() @ point
+            hit, loc, _normal, _face = eval_obj.closest_point_on_mesh(p_local)
+            if not hit:
+                continue
+            loc_world = eval_obj.matrix_world @ loc
+            d = (loc_world - point).length
+            if d < min_dist:
+                min_dist = d
+        except Exception:
+            continue
+    return min_dist
+
+
+def _fit_camera_points(points: List[Vector], center: Vector, shell_objs: List[bpy.types.Object], clearance: float = 0.12):
+    """
+    Pull camera points toward center until they are no longer embedded in shell geometry.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    fitted = []
+    for p in points:
+        cur = Vector((p.x, p.y, p.z))
+        for _ in range(30):
+            d = _min_surface_distance(cur, shell_objs, depsgraph)
+            if d >= clearance:
+                break
+            cur = center.lerp(cur, 0.85)  # move 15% toward center
+        fitted.append(cur)
+    return fitted
 
 
 def room_scene_name(front_room_root: str, room_dir: str):
@@ -553,7 +594,7 @@ def main():
         os.makedirs(out_room, exist_ok=True)
 
         print(f"[{r_i + 1}/{len(rooms)}] room={scene_name}")
-        meshes, lamp_instances, room_debug = import_room_and_detect_lamps(room_dir, model_info)
+        meshes, shell_meshes, lamp_instances, room_debug = import_room_and_detect_lamps(room_dir, model_info)
         if not meshes:
             print("  -> skip: no mesh imported")
             continue
@@ -594,6 +635,12 @@ def main():
             n=args.global_views,
             z=room_floor_z + min(1.6, room_h * 0.5),
         )
+        g_points = _fit_camera_points(
+            g_points,
+            Vector((room_center.x, room_center.y, room_floor_z + min(1.2, room_h * 0.4))),
+            shell_meshes,
+            clearance=0.12,
+        )
         for i, p in enumerate(g_points):
             cam.location = p
             look_at(cam, Vector((room_center.x, room_center.y, room_floor_z + min(1.2, room_h * 0.4))))
@@ -620,6 +667,12 @@ def main():
                 radius=max(0.6, min(2.0, room_radius * 0.35)),
                 n=args.lamp_views,
                 z=max(room_floor_z + 0.8, min(lc.z + 0.3, room_floor_z + room_h - 0.1)),
+            )
+            lp = _fit_camera_points(
+                lp,
+                Vector((lc.x, lc.y, max(room_floor_z + 0.8, min(lc.z, room_floor_z + room_h - 0.1)))),
+                shell_meshes,
+                clearance=0.10,
             )
             for j, p in enumerate(lp):
                 cam.location = p
