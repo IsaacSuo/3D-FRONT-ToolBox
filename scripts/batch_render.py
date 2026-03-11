@@ -490,17 +490,17 @@ def prepare_scene_from_front_room(room_dir):
         print(f"错误: 房间目录未导入任何网格: {room_dir}")
         return None
 
-    # 4) 自动推断 Anchor（房间平面中心 + 地面高度）
+    # 4) 自动推断 Anchor（XY 取房间中心，Z 取房间中高，保证“中心”在空中）
     bounds = _get_world_bounds(mesh_objs)
     if not bounds:
         return None
     bmin, bmax = bounds
     cx, cy = (bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5
-    floor_z = bmin.z
+    mid_z = (bmin.z + bmax.z) * 0.5
 
     anchor = bpy.data.objects.new(CONFIG_PATHS.get("anchor_name", "ANCHOR"), None)
     scene.collection.objects.link(anchor)
-    anchor.location = Vector((cx, cy, floor_z + ANCHOR_HALF_SIZE_M))
+    anchor.location = Vector((cx, cy, mid_z))
 
     _auto_add_room_lights_from_lamps(mesh_objs)
     return anchor
@@ -1032,9 +1032,6 @@ def import_and_process_glb(file_path, anchor_obj):
     anchor_dim_x = 2.0 * ANCHOR_HALF_SIZE_M
     anchor_dim_y = 2.0 * ANCHOR_HALF_SIZE_M
     anchor_dim_z = 2.0 * ANCHOR_HALF_SIZE_M
-    # Anchor 原点在立方体中心：地面 = center_z - half_size
-    anchor_floor_z = anchor_loc.z - ANCHOR_HALF_SIZE_M
-
     print(f"  -> 正在导入: {os.path.basename(file_path)} ...")
     
     # 禁用撤销、导入GLB
@@ -1112,18 +1109,12 @@ def import_and_process_glb(file_path, anchor_obj):
     final_obj.scale *= target_scale
     bpy.ops.object.transform_apply(scale=True)
     
-    # 4. 最终落地：对齐 Anchor 的底面
+    # 4. 保持“物体中心”与 Anchor 中心对齐（不再按底面对齐地面）
     bpy.context.view_layer.update()
-    
-    # 计算物体当前的世界坐标最低点
-    world_corners = [final_obj.matrix_world @ Vector(corner) for corner in final_obj.bound_box]
-    obj_min_z = min(corner.z for corner in world_corners)
-    
-    # 计算需要下降/上升多少距离才能碰到 Anchor 的地板
-    drop_distance = anchor_floor_z - obj_min_z
-    final_obj.location.z += drop_distance
+    center_offset = anchor_loc.z - final_obj.location.z
+    final_obj.location.z += center_offset
 
-    print(f"  -> 已适配 Anchor 尺寸: 缩放倍率 {target_scale:.4f}, 落地位移 {drop_distance:.4f}")
+    print(f"  -> 已适配 Anchor 尺寸: 缩放倍率 {target_scale:.4f}, 中心位移 {center_offset:.4f}")
 
     # ==========================================================================
 

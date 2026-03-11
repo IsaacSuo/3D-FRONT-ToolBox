@@ -27,6 +27,8 @@ from typing import Dict, List, Tuple
 import bpy
 from mathutils import Vector
 
+from find_placement_surface import find_best_surface_result
+
 
 UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -48,6 +50,7 @@ def parse_args():
     p.add_argument("--lamp-views", type=int, default=6, help="views per lamp")
     p.add_argument("--res-x", type=int, default=1600)
     p.add_argument("--res-y", type=int, default=1200)
+    p.add_argument("--lens", type=float, default=50.0)
     p.add_argument("--samples", type=int, default=512)
     p.add_argument("--preview-images", action="store_true", help="also render light-independent preview images")
     p.add_argument("--seed", type=int, default=0)
@@ -55,6 +58,12 @@ def parse_args():
     p.add_argument("--gpu-backend", default="CUDA", choices=["CUDA", "OPTIX", "HIP", "METAL", "ONEAPI"])
     p.add_argument("--world-strength", type=float, default=0.02, help="tiny ambient fill only")
     p.add_argument("--up-axis", default="Y", choices=["X", "Y", "Z"], help="up axis of imported room OBJ")
+    p.add_argument("--camera-margin", type=float, default=1.4)
+    p.add_argument("--camera-furniture-clearance", type=float, default=0.15)
+    p.add_argument("--target-d-min", type=float, default=0.35)
+    p.add_argument("--target-d-max", type=float, default=1.20)
+    p.add_argument("--target-d-step", type=float, default=0.05)
+    p.add_argument("--use-hemisphere", action="store_true", default=True)
     return p.parse_args(blender_args())
 
 
@@ -373,13 +382,13 @@ def look_at(cam_obj: bpy.types.Object, target: Vector):
     cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
-def ensure_camera():
+def ensure_camera(lens: float = 50.0):
     scene = bpy.context.scene
     cam_data = bpy.data.cameras.new(name="EvalCamera")
     cam = bpy.data.objects.new("EvalCamera", cam_data)
     scene.collection.objects.link(cam)
     scene.camera = cam
-    cam_data.lens = 35
+    cam_data.lens = float(lens)
     return cam
 
 
@@ -397,6 +406,37 @@ def ring_points(center: Vector, radius: float, n: int, up_value: float, up_idx: 
         arr[up_idx] = up_value
         pts.append(Vector((arr[0], arr[1], arr[2])))
     return pts
+
+
+def generate_fibonacci_points_world(n_samples: int, radius: float, center_loc: Vector, up_idx: int, hemisphere: bool = True):
+    points = []
+    phi = math.pi * (3.0 - math.sqrt(5.0))
+    h_axes = [0, 1, 2]
+    h_axes.remove(up_idx)
+    a0, a1 = h_axes[0], h_axes[1]
+    for i in range(n_samples):
+        safe_n = n_samples - 1 if n_samples > 1 else 1
+        z = 1 - (i / safe_n) if hemisphere else 1 - (i / safe_n) * 2
+        radius_at_z = math.sqrt(max(0.0, 1.0 - z * z)) * radius
+        theta = phi * i
+        x = math.cos(theta) * radius_at_z
+        y = math.sin(theta) * radius_at_z
+        z_world = z * radius
+        arr = [center_loc.x, center_loc.y, center_loc.z]
+        arr[a0] += x
+        arr[a1] += y
+        arr[up_idx] += z_world
+        points.append(Vector((arr[0], arr[1], arr[2])))
+    return points
+
+
+def compute_safe_distance_3d(cam_obj: bpy.types.Object, res_x: int, res_y: int, target_diameter: float, margin: float):
+    target_radius = max(1e-6, float(target_diameter) * 0.5)
+    fov_h = float(cam_obj.data.angle)
+    ar = float(res_x) / float(max(res_y, 1))
+    fov_v = 2.0 * math.atan(math.tan(fov_h * 0.5) / ar)
+    narrow = max(1e-6, min(fov_h, fov_v))
+    return (target_radius * float(margin)) / math.sin(narrow * 0.5)
 
 
 def render_still(path: str):
@@ -626,6 +666,33 @@ def _camera_outside_room_aabb(cam_pos: Vector, bmin: Vector, bmax: Vector, margi
     )
 
 
+def _clamp_into_room_aabb(p: Vector, bmin: Vector, bmax: Vector, margin: float = 0.08) -> Vector:
+    return Vector((
+        min(max(p.x, bmin.x + margin), bmax.x - margin),
+        min(max(p.y, bmin.y + margin), bmax.y - margin),
+        min(max(p.z, bmin.z + margin), bmax.z - margin),
+    ))
+
+
+def find_room_target_surface(room_dir: str, args):
+    result = find_best_surface_result(
+        room_dir=room_dir,
+        up_axis=args.up_axis,
+        num_views=args.global_views,
+        lens=args.lens,
+        res_x=args.res_x,
+        res_y=args.res_y,
+        use_hemisphere=args.use_hemisphere,
+        target_d_min=args.target_d_min,
+        target_d_max=args.target_d_max,
+        target_d_step=args.target_d_step,
+        camera_margin=args.camera_margin,
+        camera_furniture_clearance=args.camera_furniture_clearance,
+    )
+    best = result.get("best_surface")
+    return result, best
+
+
 def main():
     args = parse_args()
     random.seed(args.seed)
@@ -655,7 +722,7 @@ def main():
         clear_scene()
         setup_cycles(args)
         setup_world(args.world_strength)
-        cam = ensure_camera()
+        cam = ensure_camera(args.lens)
         if args.preview_images:
             preview_mat = get_or_create_preview_material()
 
@@ -687,7 +754,6 @@ def main():
         ) * 0.6
         room_floor = get_comp(bmin, up_idx)
         room_h = max(2.0, get_comp(bmax, up_idx) - get_comp(bmin, up_idx))
-        center_view = set_comp(room_center, up_idx, room_floor + min(1.2, room_h * 0.4))
 
         lights_meta = []
         for lamp in lamp_instances:
@@ -702,15 +768,29 @@ def main():
         with open(os.path.join(out_room, "detect_debug.json"), "w", encoding="utf-8") as f:
             json.dump(room_debug, f, ensure_ascii=False, indent=2)
 
+        placement_result, best_surface = find_room_target_surface(room_dir, args)
+        with open(os.path.join(out_room, "placement_surface.json"), "w", encoding="utf-8") as f:
+            json.dump(placement_result, f, ensure_ascii=False, indent=2)
+
+        if best_surface is not None:
+            target_center = Vector(best_surface.get("placement_center", best_surface["centroid"]))
+            target_diameter = float(best_surface["target_diameter"])
+        else:
+            target_center = room_center
+            target_diameter = max(0.5, min(1.0, room_radius * 0.5))
+
+        center_view = set_comp(target_center, up_idx, max(room_floor + 0.5, min(get_comp(target_center, up_idx), room_floor + room_h - 0.2)))
+        safe_distance_3d = compute_safe_distance_3d(cam, args.res_x, args.res_y, target_diameter, args.camera_margin)
+
         renders_meta = []
 
-        # 1) Room-level global views.
-        g_points = ring_points(
-            center=room_center,
-            radius=max(room_radius, 1.8),
-            n=args.global_views,
-            up_value=room_floor + min(1.6, room_h * 0.5),
+        # 1) Room-level global views (Fibonacci sphere around selected placement center).
+        g_points = generate_fibonacci_points_world(
+            n_samples=args.global_views,
+            radius=safe_distance_3d,
+            center_loc=center_view,
             up_idx=up_idx,
+            hemisphere=args.use_hemisphere,
         )
         g_points = _fit_camera_points(
             g_points,
@@ -718,9 +798,10 @@ def main():
             shell_meshes,
             clearance=0.12,
         )
+        g_points = [_clamp_into_room_aabb(p, bmin, bmax, margin=0.08) for p in g_points]
         for i, p in enumerate(g_points):
             cam.location = p
-            look_at(cam, center_view)
+            look_at(cam, target_center)
             img_path = os.path.join(out_room, "global", f"{i:03d}.png")
             render_still(img_path)
             if preview_mat is not None:
@@ -735,24 +816,27 @@ def main():
                 }
             )
 
-        # 2) Per-lamp close-up views, to validate lamp distribution.
+        # 2) Per-lamp close-up views, also using Fibonacci strategy.
         for lamp in lights_meta:
             lc = Vector(lamp["lamp_center"])
             lamp_dir = os.path.join(out_room, "lamps", f"lamp_{lamp['lamp_id']:03d}")
-            lamp_up = get_comp(lc, up_idx)
-            lp = ring_points(
-                center=lc,
-                radius=max(0.6, min(2.0, room_radius * 0.35)),
-                n=args.lamp_views,
-                up_value=max(room_floor + 0.8, min(lamp_up + 0.3, room_floor + room_h - 0.1)),
+            # Use lamp scale proxy from light radius for safe-distance computation.
+            lamp_d = max(0.25, float(lamp.get("radius_m", 0.08)) * 4.0)
+            lamp_safe = compute_safe_distance_3d(cam, args.res_x, args.res_y, lamp_d, args.camera_margin)
+            lp = generate_fibonacci_points_world(
+                n_samples=args.lamp_views,
+                radius=lamp_safe,
+                center_loc=lc,
                 up_idx=up_idx,
+                hemisphere=args.use_hemisphere,
             )
             lp = _fit_camera_points(
                 lp,
-                set_comp(lc, up_idx, max(room_floor + 0.8, min(lamp_up, room_floor + room_h - 0.1))),
+                lc,
                 shell_meshes,
                 clearance=0.10,
             )
+            lp = [_clamp_into_room_aabb(p, bmin, bmax, margin=0.06) for p in lp]
             for j, p in enumerate(lp):
                 cam.location = p
                 look_at(cam, lc)
@@ -788,6 +872,9 @@ def main():
                 "room_dir": room_dir,
                 "num_lamps_detected": len(lights_meta),
                 "num_images": len(renders_meta),
+                "target_center": [target_center.x, target_center.y, target_center.z],
+                "target_diameter": target_diameter,
+                "safe_distance_3d": safe_distance_3d,
                 "room_bounds": {
                     "min": [bmin.x, bmin.y, bmin.z],
                     "max": [bmax.x, bmax.y, bmax.z],
