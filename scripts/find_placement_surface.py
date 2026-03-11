@@ -173,19 +173,79 @@ def build_candidates(room_dir, up_idx, max_tilt_cos, height_bin):
             k["min2"] = np.minimum(k["min2"], np.min(tri2, axis=0))
             k["max2"] = np.maximum(k["max2"], np.max(tri2, axis=0))
 
-    candidates = []
+    raw_candidates = []
     for (_, hbin), c in clusters.items():
         if c["area"] <= 0:
             continue
         centroid = c["cent_acc"] / c["area"]
         span2 = c["max2"] - c["min2"]
-        candidates.append({
+        raw_candidates.append({
             "object_file": c["obj"],
             "height": float(hbin * height_bin),
+            "hbin": int(hbin),
             "area": float(c["area"]),
             "centroid": centroid,
             "span2d": span2,
+            "min2": c["min2"].copy(),
+            "max2": c["max2"].copy(),
+            "support_files": [c["obj"]],
         })
+
+    # Merge fragmented supports at same height-bin by nearby/overlapping 2D spans.
+    def _boxes_near(a_min, a_max, b_min, b_max, gap=0.08):
+        sep_x = max(0.0, max(b_min[0] - a_max[0], a_min[0] - b_max[0]))
+        sep_y = max(0.0, max(b_min[1] - a_max[1], a_min[1] - b_max[1]))
+        return (sep_x <= gap) and (sep_y <= gap)
+
+    by_h = defaultdict(list)
+    for rc in raw_candidates:
+        by_h[rc["hbin"]].append(rc)
+
+    candidates = []
+    for hbin, items in by_h.items():
+        groups = []
+        for it in items:
+            groups.append({
+                "hbin": hbin,
+                "height": it["height"],
+                "area": float(it["area"]),
+                "cent_acc": np.asarray(it["centroid"], dtype=np.float64) * float(it["area"]),
+                "min2": it["min2"].copy(),
+                "max2": it["max2"].copy(),
+                "support_files": set(it.get("support_files") or []),
+            })
+
+        changed = True
+        while changed and len(groups) > 1:
+            changed = False
+            i = 0
+            while i < len(groups):
+                j = i + 1
+                while j < len(groups):
+                    gi, gj = groups[i], groups[j]
+                    if _boxes_near(gi["min2"], gi["max2"], gj["min2"], gj["max2"]):
+                        gi["area"] += gj["area"]
+                        gi["cent_acc"] += gj["cent_acc"]
+                        gi["min2"] = np.minimum(gi["min2"], gj["min2"])
+                        gi["max2"] = np.maximum(gi["max2"], gj["max2"])
+                        gi["support_files"].update(gj["support_files"])
+                        groups.pop(j)
+                        changed = True
+                    else:
+                        j += 1
+                i += 1
+
+        for g in groups:
+            area = max(float(g["area"]), 1e-9)
+            centroid = g["cent_acc"] / area
+            candidates.append({
+                "object_file": f"hbin_{hbin}",
+                "height": float(g["height"]),
+                "area": area,
+                "centroid": centroid,
+                "span2d": g["max2"] - g["min2"],
+                "support_files": sorted(list(g["support_files"])),
+            })
 
     return room_min, room_max, room_center, candidates
 
@@ -213,6 +273,14 @@ def collect_furniture_aabbs(room_dir: str):
 def point_box_distance_2d(p2: np.ndarray, bmin2: np.ndarray, bmax2: np.ndarray) -> float:
     q = np.maximum(np.maximum(bmin2 - p2, 0.0), p2 - bmax2)
     return float(np.linalg.norm(q))
+
+
+def _is_ignored_support(name: str, ignore_object_file) -> bool:
+    if ignore_object_file is None:
+        return False
+    if isinstance(ignore_object_file, (set, list, tuple)):
+        return name in ignore_object_file
+    return name == ignore_object_file
 
 
 def choose_empty_point_on_surface(
@@ -260,7 +328,7 @@ def choose_empty_point_on_surface(
 
             blocked = False
             for name, bmin3, bmax3 in furniture_aabbs:
-                if name == ignore_object_file:
+                if _is_ignored_support(name, ignore_object_file):
                     continue
                 bmin2 = np.array([bmin3[a0], bmin3[a1]], dtype=np.float64)
                 bmax2 = np.array([bmax3[a0], bmax3[a1]], dtype=np.float64)
@@ -321,7 +389,7 @@ def list_empty_points_on_surface(
             min_clear = 1e18
             blocked = False
             for name, bmin3, bmax3 in furniture_aabbs:
-                if name == ignore_object_file:
+                if _is_ignored_support(name, ignore_object_file):
                     continue
                 bmin2 = np.array([bmin3[a0], bmin3[a1]], dtype=np.float64)
                 bmax2 = np.array([bmax3[a0], bmax3[a1]], dtype=np.float64)
@@ -357,7 +425,7 @@ def min_clearance_to_furniture_2d(
     p2 = np.array([p3[a0], p3[a1]], dtype=np.float64)
     min_clear = 1e18
     for name, bmin3, bmax3 in furniture_aabbs:
-        if name == ignore_object_file:
+        if _is_ignored_support(name, ignore_object_file):
             continue
         bmin2 = np.array([bmin3[a0], bmin3[a1]], dtype=np.float64)
         bmax2 = np.array([bmax3[a0], bmax3[a1]], dtype=np.float64)
@@ -537,7 +605,7 @@ def find_best_surface_result(
             room_center=room_center,
             furniture_aabbs=furniture_aabbs,
             up_idx=up_idx,
-            ignore_object_file=c["object_file"],
+            ignore_object_file=c.get("support_files", [c["object_file"]]),
             grid_n=21,
             top_k=10,
         )
@@ -556,7 +624,7 @@ def find_best_surface_result(
                 room_max_c=room_max_c,
                 furniture_aabbs=furniture_aabbs,
                 up_idx=up_idx,
-                ignore_object_file=c["object_file"],
+                ignore_object_file=c.get("support_files", [c["object_file"]]),
                 anchor_height_ratio=anchor_height_ratio,
             )
             if d_max_geom < target_d_min:
