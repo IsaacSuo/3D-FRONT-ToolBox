@@ -6,7 +6,7 @@ Goal:
 - Import rooms exported by json2obj.py
 - Detect lamp furniture from model_info.json (super-category == Lighting)
 - Add synthetic physically-plausible lights per lamp category
-- Render many validation views (room-level + per-lamp close-up)
+- Render room-level validation views only
 
 Run:
   blender -b -P scripts/test_front_lighting.py -- \
@@ -52,7 +52,7 @@ def parse_args():
     p.add_argument("--output", default="./lighting_test_output", help="output root")
     p.add_argument("--max-rooms", type=int, default=0, help="0 means all rooms")
     p.add_argument("--global-views", type=int, default=16, help="views per room")
-    p.add_argument("--lamp-views", type=int, default=6, help="views per lamp")
+    p.add_argument("--lamp-views", type=int, default=6, help="deprecated: ignored (no lamp close-up rendering)")
     p.add_argument("--res-x", type=int, default=1600)
     p.add_argument("--res-y", type=int, default=1200)
     p.add_argument("--lens", type=float, default=50.0)
@@ -397,6 +397,18 @@ def ensure_camera(lens: float = 50.0):
     return cam
 
 
+def create_anchor(center: Vector, cube_size_m: float):
+    scene = bpy.context.scene
+    name = "ANCHOR"
+    if name in scene.objects:
+        bpy.data.objects.remove(scene.objects[name], do_unlink=True)
+    anchor = bpy.data.objects.new(name, None)
+    scene.collection.objects.link(anchor)
+    anchor.location = center
+    anchor["cube_size_m"] = float(cube_size_m)
+    return anchor
+
+
 def ring_points(center: Vector, radius: float, n: int, up_value: float, up_idx: int):
     pts = []
     n = max(1, int(n))
@@ -693,6 +705,7 @@ def find_room_target_surface(room_dir: str, args):
         target_d_step=args.target_d_step,
         camera_margin=args.camera_margin,
         camera_furniture_clearance=args.camera_furniture_clearance,
+        require_all_cameras=True,
     )
     best = result.get("best_surface")
     return result, best
@@ -750,11 +763,6 @@ def main():
         )
 
         bmin, bmax = obj_world_bounds(meshes)
-        h_axes = [0, 1, 2]
-        h_axes.remove(up_idx)
-        room_floor = get_comp(bmin, up_idx)
-        room_h = max(2.0, get_comp(bmax, up_idx) - get_comp(bmin, up_idx))
-
         lights_meta = []
         for lamp in lamp_instances:
             meta = add_light_for_lamp(lamp["lamp_id"], lamp["objects"], lamp["category"], up_idx)
@@ -787,29 +795,21 @@ def main():
             print("  -> continue: try next room")
             continue
 
-        target_center = Vector(best_surface.get("placement_center", best_surface["centroid"]))
+        target_center = Vector(best_surface.get("anchor_center") or best_surface.get("placement_center", best_surface["centroid"]))
         target_diameter = float(best_surface["target_diameter"])
-
-        center_view = set_comp(target_center, up_idx, max(room_floor + 0.5, min(get_comp(target_center, up_idx), room_floor + room_h - 0.2)))
+        anchor = create_anchor(target_center, target_diameter)
         safe_distance_3d = compute_safe_distance_3d(cam, args.res_x, args.res_y, target_diameter, args.camera_margin)
 
         renders_meta = []
 
-        # 1) Room-level global views (Fibonacci sphere around selected placement center).
+        # 1) Room-level global views (directly generated around best-surface anchor).
         g_points = generate_fibonacci_points_world(
             n_samples=args.global_views,
             radius=safe_distance_3d,
-            center_loc=center_view,
+            center_loc=target_center,
             up_idx=up_idx,
             hemisphere=args.use_hemisphere,
         )
-        g_points = _fit_camera_points(
-            g_points,
-            center_view,
-            shell_meshes,
-            clearance=0.12,
-        )
-        g_points = [_clamp_into_room_aabb(p, bmin, bmax, margin=0.08) for p in g_points]
         for i, p in enumerate(g_points):
             cam.location = p
             look_at(cam, target_center)
@@ -823,45 +823,6 @@ def main():
                     "type": "global",
                     "path": os.path.relpath(img_path, out_room),
                     "camera_pos": [cam.location.x, cam.location.y, cam.location.z],
-                    "camera_matrix_world": [list(row) for row in cam.matrix_world],
-                }
-            )
-
-        # 2) Per-lamp close-up views, also using Fibonacci strategy.
-        for lamp in lights_meta:
-            lc = Vector(lamp["lamp_center"])
-            lamp_dir = os.path.join(out_room, "lamps", f"lamp_{lamp['lamp_id']:03d}")
-            # Use lamp scale proxy from light radius for safe-distance computation.
-            lamp_d = max(0.25, float(lamp.get("radius_m", 0.08)) * 4.0)
-            lamp_safe = compute_safe_distance_3d(cam, args.res_x, args.res_y, lamp_d, args.camera_margin)
-            lp = generate_fibonacci_points_world(
-                n_samples=args.lamp_views,
-                radius=lamp_safe,
-                center_loc=lc,
-                up_idx=up_idx,
-                hemisphere=args.use_hemisphere,
-            )
-            lp = _fit_camera_points(
-                lp,
-                lc,
-                shell_meshes,
-                clearance=0.10,
-            )
-            lp = [_clamp_into_room_aabb(p, bmin, bmax, margin=0.06) for p in lp]
-            for j, p in enumerate(lp):
-                cam.location = p
-                look_at(cam, lc)
-                img_path = os.path.join(lamp_dir, f"{j:03d}.png")
-                render_still(img_path)
-                if preview_mat is not None:
-                    prev_path = os.path.join(out_room, "lamps_preview", f"lamp_{lamp['lamp_id']:03d}", f"{j:03d}.png")
-                    render_preview_still(prev_path, preview_mat)
-                renders_meta.append(
-                    {
-                        "type": "lamp_closeup",
-                        "lamp_id": lamp["lamp_id"],
-                        "path": os.path.relpath(img_path, out_room),
-                        "camera_pos": [cam.location.x, cam.location.y, cam.location.z],
                         "camera_matrix_world": [list(row) for row in cam.matrix_world],
                     }
                 )
@@ -885,6 +846,11 @@ def main():
                 "num_images": len(renders_meta),
                 "target_center": [target_center.x, target_center.y, target_center.z],
                 "target_diameter": target_diameter,
+                "anchor": {
+                    "name": anchor.name,
+                    "location": [anchor.location.x, anchor.location.y, anchor.location.z],
+                    "cube_size_m": float(anchor["cube_size_m"]),
+                },
                 "safe_distance_3d": safe_distance_3d,
                 "room_bounds": {
                     "min": [bmin.x, bmin.y, bmin.z],

@@ -352,6 +352,8 @@ def find_best_surface_result(
     min_area: float = 0.06,
     height_bin: float = 0.02,
     max_tilt_deg: float = 10.0,
+    require_all_cameras: bool = True,
+    anchor_height_ratio: float = 0.5,
 ):
     room_dir = os.path.abspath(room_dir)
     up_idx = axis_index(up_axis)
@@ -402,10 +404,14 @@ def find_best_surface_result(
             )
             if place_point is None:
                 continue
+            anchor_center = place_point.copy()
+            anchor_center[up_idx] += float(td) * float(anchor_height_ratio)
+            if np.any(anchor_center < room_min_c) or np.any(anchor_center > room_max_c):
+                continue
             r = td * 0.5
             safe_dist = (r * camera_margin) / max(math.sin(narrow * 0.5), 1e-6)
             ok, total, coll = camera_feasible_count(
-                place_point,
+                anchor_center,
                 td,
                 room_min_c,
                 room_max_c,
@@ -420,6 +426,7 @@ def find_best_surface_result(
                 "object_file": c["object_file"],
                 "centroid": center.tolist(),
                 "placement_center": place_point.tolist(),
+                "anchor_center": anchor_center.tolist(),
                 "placement_score": float(place_score),
                 "height": float(c["height"]),
                 "surface_area": float(c["area"]),
@@ -430,8 +437,10 @@ def find_best_surface_result(
                 "camera_total": int(total),
                 "camera_ok_ratio": float(ok / max(total, 1)),
                 "camera_collision_count": int(coll),
-                "room_center_dist": float(np.linalg.norm(center - room_center)),
+                "room_center_dist": float(np.linalg.norm(anchor_center - room_center)),
             }
+            if require_all_cameras and ok < total:
+                continue
             key = (rec["camera_ok"], rec["target_diameter"], rec["surface_area"])
             if best_local is None or key > (
                 best_local["camera_ok"], best_local["target_diameter"], best_local["surface_area"]
@@ -484,6 +493,7 @@ def main():
         min_area=args.min_area,
         height_bin=args.height_bin,
         max_tilt_deg=args.max_tilt_deg,
+        require_all_cameras=True,
     )
 
     out_path = args.output or os.path.join(os.path.abspath(args.room_dir), "placement_surface.json")
