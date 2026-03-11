@@ -711,6 +711,36 @@ def find_room_target_surface(room_dir: str, args):
     return result, best
 
 
+def print_surface_debug(result: dict, top_k: int = 8):
+    if not isinstance(result, dict):
+        print("  -> placement debug: invalid result payload")
+        return
+    best = result.get("best_surface")
+    print(
+        "  -> placement summary:"
+        f" candidates={result.get('num_candidates', 0)}"
+        f" evaluated={result.get('num_evaluated', 0)}"
+        f" has_best={best is not None}"
+    )
+    tops = result.get("top_candidates") or []
+    if not tops:
+        print("  -> placement top candidates: none")
+        return
+    print("  -> placement top candidates:")
+    for i, c in enumerate(tops[: max(1, int(top_k))], start=1):
+        anc = c.get("anchor_center")
+        anc_s = "None" if anc is None else f"[{anc[0]:.3f},{anc[1]:.3f},{anc[2]:.3f}]"
+        print(
+            f"     {i:02d}) obj={c.get('object_file')} "
+            f"d={float(c.get('target_diameter', 0.0)):.3f} "
+            f"dmax={float(c.get('d_max_geom', 0.0)):.3f} "
+            f"cam={int(c.get('camera_ok', 0))}/{int(c.get('camera_total', 0))} "
+            f"area={float(c.get('surface_area', 0.0)):.3f} "
+            f"center_dist={float(c.get('room_center_dist', 0.0)):.3f} "
+            f"anchor={anc_s}"
+        )
+
+
 def main():
     args = parse_args()
     random.seed(args.seed)
@@ -779,6 +809,7 @@ def main():
         placement_result, best_surface = find_room_target_surface(room_dir, args)
         with open(os.path.join(out_room, "placement_surface.json"), "w", encoding="utf-8") as f:
             json.dump(placement_result, f, ensure_ascii=False, indent=2)
+        print_surface_debug(placement_result, top_k=8)
 
         if best_surface is None:
             print("  -> stop room: no feasible best surface")
