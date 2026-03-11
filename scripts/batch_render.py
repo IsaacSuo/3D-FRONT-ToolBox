@@ -575,14 +575,17 @@ def prepare_scene_from_front_room(room_dir):
     mid_z = (bmin.z + bmax.z) * 0.5
 
     best_anchor_loc, best_cube_size_m = _infer_anchor_from_best_surface(room_dir)
-    if best_anchor_loc is not None and best_cube_size_m is not None:
+    if ANCHOR_PLACEMENT_CONFIG.get("use_best_surface", True):
+        if best_anchor_loc is None or best_cube_size_m is None:
+            print("错误: 未找到可用最佳平面，当前房间停止渲染。")
+            return None
         anchor_loc = best_anchor_loc
         cube_size_m = best_cube_size_m
         mode = "best_surface"
     else:
         anchor_loc = Vector((cx, cy, mid_z))
         cube_size_m = float(LOGIC_CONFIG.get("target_diameter", 1.0))
-        mode = "fallback_target_diameter"
+        mode = "target_diameter"
 
     anchor = bpy.data.objects.new(CONFIG_PATHS.get("anchor_name", "ANCHOR"), None)
     scene.collection.objects.link(anchor)
@@ -1511,7 +1514,10 @@ def main():
         else:
             anchor = prepare_scene_from_front_room(src_path)
             if not anchor:
-                print("  -> 跳过：房间构建失败")
+                if len(scene_entries) == 1:
+                    print("  -> 停止：当前指定房间不可渲染（未找到最佳平面或房间构建失败）")
+                    return
+                print("  -> 跳过：当前房间不可渲染，切换下一个房间")
                 continue
         setup_world_hdri(bpy.context.scene)
 
