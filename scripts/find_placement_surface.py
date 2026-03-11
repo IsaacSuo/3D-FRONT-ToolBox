@@ -513,11 +513,21 @@ def find_best_surface_result(
     narrow = min(fov_h, fov_v)
 
     evals = []
+    reject_stats = {
+        "area_too_small": 0,
+        "centroid_outside_room_margin": 0,
+        "no_place_candidates": 0,
+        "dmax_below_min": 0,
+        "dhi_below_min": 0,
+        "camera_infeasible": 0,
+    }
     for c in candidates:
         if c["area"] < min_area:
+            reject_stats["area_too_small"] += 1
             continue
         center = c["centroid"].copy()
         if np.any(center < room_min_c) or np.any(center > room_max_c):
+            reject_stats["centroid_outside_room_margin"] += 1
             continue
         place_candidates = list_empty_points_on_surface(
             candidate={
@@ -532,6 +542,7 @@ def find_best_surface_result(
             top_k=10,
         )
         if not place_candidates:
+            reject_stats["no_place_candidates"] += 1
             continue
         best_rec = None
         for place_point, place_score in place_candidates:
@@ -549,10 +560,12 @@ def find_best_surface_result(
                 anchor_height_ratio=anchor_height_ratio,
             )
             if d_max_geom < target_d_min:
+                reject_stats["dmax_below_min"] += 1
                 continue
 
             d_hi = min(float(target_d_max), float(d_max_geom) * float(diameter_alpha))
             if d_hi < target_d_min:
+                reject_stats["dhi_below_min"] += 1
                 continue
 
             # Find largest camera-feasible diameter with binary search.
@@ -590,6 +603,7 @@ def find_best_surface_result(
                     hi = mid
 
             if best_d is None:
+                reject_stats["camera_infeasible"] += 1
                 continue
 
             ok, total, coll, safe_dist, anchor_center = best_stats
@@ -628,6 +642,7 @@ def find_best_surface_result(
         "room_bounds": {"min": room_min.tolist(), "max": room_max.tolist()},
         "num_candidates": len(candidates),
         "num_evaluated": len(evals),
+        "reject_stats": reject_stats,
         "best_surface": best,
         "top_candidates": evals[:20],
         "camera_generation": {

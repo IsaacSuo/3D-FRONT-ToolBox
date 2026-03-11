@@ -722,6 +722,17 @@ def print_surface_debug(result: dict, top_k: int = 8):
         f" evaluated={result.get('num_evaluated', 0)}"
         f" has_best={best is not None}"
     )
+    rs = result.get("reject_stats") or {}
+    if rs:
+        print(
+            "  -> placement rejects:"
+            f" area={rs.get('area_too_small', 0)}"
+            f" center={rs.get('centroid_outside_room_margin', 0)}"
+            f" no_place={rs.get('no_place_candidates', 0)}"
+            f" dmax={rs.get('dmax_below_min', 0)}"
+            f" dhi={rs.get('dhi_below_min', 0)}"
+            f" cam={rs.get('camera_infeasible', 0)}"
+        )
     tops = result.get("top_candidates") or []
     if not tops:
         print("  -> placement top candidates: none")
