@@ -54,7 +54,22 @@ def parse_args():
     p.add_argument("--device", default="GPU", choices=["GPU", "CPU"])
     p.add_argument("--gpu-backend", default="CUDA", choices=["CUDA", "OPTIX", "HIP", "METAL", "ONEAPI"])
     p.add_argument("--world-strength", type=float, default=0.02, help="tiny ambient fill only")
+    p.add_argument("--up-axis", default="Y", choices=["X", "Y", "Z"], help="up axis of imported room OBJ")
     return p.parse_args(blender_args())
+
+
+def axis_index(axis: str) -> int:
+    return {"X": 0, "Y": 1, "Z": 2}[str(axis).upper()]
+
+
+def get_comp(v: Vector, idx: int) -> float:
+    return float((v.x, v.y, v.z)[idx])
+
+
+def set_comp(v: Vector, idx: int, value: float) -> Vector:
+    arr = [v.x, v.y, v.z]
+    arr[idx] = float(value)
+    return Vector((arr[0], arr[1], arr[2]))
 
 
 def load_model_info(path: str) -> Dict[str, dict]:
@@ -308,9 +323,11 @@ def lamp_profile(category: str):
     return ("POINT", 50.0, 3200, 0.08)
 
 
-def add_light_for_lamp(instance_id: int, lamp_objs: List[bpy.types.Object], category: str):
+def add_light_for_lamp(instance_id: int, lamp_objs: List[bpy.types.Object], category: str, up_idx: int):
     bmin, bmax = obj_world_bounds(lamp_objs)
     center = Vector(((bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5, (bmin.z + bmax.z) * 0.5))
+    up_min = get_comp(bmin, up_idx)
+    up_max = get_comp(bmax, up_idx)
 
     ltype, power, cct, radius = lamp_profile(category)
     color = kelvin_to_rgb(cct)
@@ -322,14 +339,14 @@ def add_light_for_lamp(instance_id: int, lamp_objs: List[bpy.types.Object], cate
         data.shape = "DISK"
         data.size = max(radius * 2.0, 0.05)
         # Ceiling-like lamps: light source slightly below lamp bbox top.
-        loc = Vector((center.x, center.y, max(bmin.z + 0.02, bmax.z - radius)))
+        loc = set_comp(center, up_idx, max(up_min + 0.02, up_max - radius))
     else:
         data = bpy.data.lights.new(name=f"L_{instance_id:04d}", type="POINT")
         data.energy = power
         data.color = color
         data.shadow_soft_size = max(radius, 0.03)
         # Point lights in the upper half of the lamp volume.
-        loc = Vector((center.x, center.y, (center.z + bmax.z) * 0.5))
+        loc = set_comp(center, up_idx, (get_comp(center, up_idx) + up_max) * 0.5)
 
     lobj = bpy.data.objects.new(data.name, data)
     bpy.context.scene.collection.objects.link(lobj)
@@ -366,12 +383,19 @@ def ensure_camera():
     return cam
 
 
-def ring_points(center: Vector, radius: float, n: int, z: float):
+def ring_points(center: Vector, radius: float, n: int, up_value: float, up_idx: int):
     pts = []
     n = max(1, int(n))
+    h_axes = [0, 1, 2]
+    h_axes.remove(up_idx)
+    a0, a1 = h_axes[0], h_axes[1]
     for i in range(n):
         a = 2.0 * math.pi * float(i) / float(n)
-        pts.append(Vector((center.x + radius * math.cos(a), center.y + radius * math.sin(a), z)))
+        arr = [center.x, center.y, center.z]
+        arr[a0] = arr[a0] + radius * math.cos(a)
+        arr[a1] = arr[a1] + radius * math.sin(a)
+        arr[up_idx] = up_value
+        pts.append(Vector((arr[0], arr[1], arr[2])))
     return pts
 
 
@@ -597,6 +621,7 @@ def room_scene_name(front_room_root: str, room_dir: str):
 def main():
     args = parse_args()
     random.seed(args.seed)
+    up_idx = axis_index(args.up_axis)
 
     model_info = load_model_info(args.model_info)
     rooms = discover_room_dirs(args.front_room_root)
@@ -645,13 +670,19 @@ def main():
 
         bmin, bmax = obj_world_bounds(meshes)
         room_center = Vector(((bmin.x + bmax.x) * 0.5, (bmin.y + bmax.y) * 0.5, (bmin.z + bmax.z) * 0.5))
-        room_radius = max((bmax.x - bmin.x), (bmax.y - bmin.y)) * 0.6
-        room_floor_z = bmin.z
-        room_h = max(2.0, bmax.z - bmin.z)
+        h_axes = [0, 1, 2]
+        h_axes.remove(up_idx)
+        room_radius = max(
+            get_comp(bmax, h_axes[0]) - get_comp(bmin, h_axes[0]),
+            get_comp(bmax, h_axes[1]) - get_comp(bmin, h_axes[1]),
+        ) * 0.6
+        room_floor = get_comp(bmin, up_idx)
+        room_h = max(2.0, get_comp(bmax, up_idx) - get_comp(bmin, up_idx))
+        center_view = set_comp(room_center, up_idx, room_floor + min(1.2, room_h * 0.4))
 
         lights_meta = []
         for lamp in lamp_instances:
-            meta = add_light_for_lamp(lamp["lamp_id"], lamp["objects"], lamp["category"])
+            meta = add_light_for_lamp(lamp["lamp_id"], lamp["objects"], lamp["category"], up_idx)
             meta["lamp_id"] = lamp["lamp_id"]
             meta["model_id"] = lamp["model_id"]
             meta["source_obj"] = lamp["source_obj"]
@@ -669,17 +700,18 @@ def main():
             center=room_center,
             radius=max(room_radius, 1.8),
             n=args.global_views,
-            z=room_floor_z + min(1.6, room_h * 0.5),
+            up_value=room_floor + min(1.6, room_h * 0.5),
+            up_idx=up_idx,
         )
         g_points = _fit_camera_points(
             g_points,
-            Vector((room_center.x, room_center.y, room_floor_z + min(1.2, room_h * 0.4))),
+            center_view,
             shell_meshes,
             clearance=0.12,
         )
         for i, p in enumerate(g_points):
             cam.location = p
-            look_at(cam, Vector((room_center.x, room_center.y, room_floor_z + min(1.2, room_h * 0.4))))
+            look_at(cam, center_view)
             img_path = os.path.join(out_room, "global", f"{i:03d}.png")
             render_still(img_path)
             if preview_mat is not None:
@@ -698,15 +730,17 @@ def main():
         for lamp in lights_meta:
             lc = Vector(lamp["lamp_center"])
             lamp_dir = os.path.join(out_room, "lamps", f"lamp_{lamp['lamp_id']:03d}")
+            lamp_up = get_comp(lc, up_idx)
             lp = ring_points(
                 center=lc,
                 radius=max(0.6, min(2.0, room_radius * 0.35)),
                 n=args.lamp_views,
-                z=max(room_floor_z + 0.8, min(lc.z + 0.3, room_floor_z + room_h - 0.1)),
+                up_value=max(room_floor + 0.8, min(lamp_up + 0.3, room_floor + room_h - 0.1)),
+                up_idx=up_idx,
             )
             lp = _fit_camera_points(
                 lp,
-                Vector((lc.x, lc.y, max(room_floor_z + 0.8, min(lc.z, room_floor_z + room_h - 0.1)))),
+                set_comp(lc, up_idx, max(room_floor + 0.8, min(lamp_up, room_floor + room_h - 0.1))),
                 shell_meshes,
                 clearance=0.10,
             )
