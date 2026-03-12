@@ -139,6 +139,27 @@ def _camera_radius_from_diameter(
     return (target_radius * float(camera_margin)) / math.sin(narrow * 0.5)
 
 
+def _ray_exit_distance_in_aabb(origin: Vector, direction: Vector, bmin: Vector, bmax: Vector) -> float:
+    """
+    Distance from an (assumed inside) point to the AABB boundary along `direction`.
+    """
+    eps = 1e-9
+    t_candidates = []
+    for i in (0, 1, 2):
+        d = float(direction[i])
+        if d > eps:
+            t = (float(bmax[i]) - float(origin[i])) / d
+            if t > 0.0:
+                t_candidates.append(t)
+        elif d < -eps:
+            t = (float(bmin[i]) - float(origin[i])) / d
+            if t > 0.0:
+                t_candidates.append(t)
+    if not t_candidates:
+        return float("inf")
+    return min(t_candidates)
+
+
 def _diameter_limit_from_safe_radius(
     safe_radius: float,
     lens_mm: float,
@@ -157,7 +178,7 @@ def find_placement_surface(
     ray_grid_step: float = 0.05,
     wall_margin: float = 0.05,
     max_tilt_deg: float = 60.0,
-    hemisphere_rays: int = 96,
+    hemisphere_rays: int = 256,
     ray_max: float = 4.0,
     voxel_size: float = 0.04,
     min_safe_radius: float = 0.20,
@@ -226,12 +247,16 @@ def find_placement_surface(
             hit, loc, _n, _f, _obj, _m = scene.ray_cast(depsgraph, o, d, distance=float(ray_max))
             if hit:
                 dist = (Vector(loc) - o).length
-                if dist < min_dist:
-                    min_dist = dist
-                    # Early break: already below minimum safe threshold,
-                    # this candidate will be rejected anyway.
-                    if min_dist < float(min_safe_radius):
-                        break
+            else:
+                # If mesh misses (e.g. room shell not watertight), use room AABB
+                # boundary as a conservative geometric cap for this direction.
+                dist = min(float(ray_max), _ray_exit_distance_in_aabb(o, d, bmin, bmax))
+            if dist < min_dist:
+                min_dist = dist
+                # Early break: already below minimum safe threshold,
+                # this candidate will be rejected anyway.
+                if min_dist < float(min_safe_radius):
+                    break
         if min_dist < float(min_safe_radius):
             reject_too_tight += 1
             continue
@@ -303,6 +328,7 @@ def find_best_surface_result(
     target_d_min: float = 0.15,
     target_d_max: float = 0.45,
     target_d_step: float = 0.05,
+    hemisphere_rays: int = 256,
     ray_max: float = 4.0,
     min_safe_radius: float = 0.20,
     camera_margin: float = 1.40,
@@ -320,6 +346,7 @@ def find_best_surface_result(
         up_axis=up_axis,
         wall_margin=float(wall_margin),
         max_tilt_deg=float(max_tilt_deg),
+        hemisphere_rays=int(hemisphere_rays),
         ray_max=float(ray_max),
         min_safe_radius=float(min_safe_radius),
     )
