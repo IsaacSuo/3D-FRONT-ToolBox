@@ -755,6 +755,38 @@ def print_surface_debug(result: dict, top_k: int = 8):
             f"anchor={anc_s}"
         )
 
+    dbg = result.get("debug_center_probe") or {}
+    if dbg:
+        rc = dbg.get("room_center")
+        dr = dbg.get("down_ray") or {}
+        ho = dbg.get("hemisphere_origin")
+        print(
+            "  -> center probe:"
+            f" room_center={rc}"
+            f" hemisphere_origin={ho}"
+            f" rays={int(dbg.get('hemisphere_ray_count', 0))}"
+        )
+        print(
+            "     down:"
+            f" hit={bool(dr.get('hit', False))}"
+            f" obj={dr.get('object')}"
+            f" dist={dr.get('distance')}"
+            f" loc={dr.get('location')}"
+            f" n={dr.get('normal')}"
+        )
+        rays = dbg.get("hemisphere_rays") or []
+        for r in rays:
+            print(
+                "     hemi:"
+                f" idx={int(r.get('idx', -1)):03d}"
+                f" hit={bool(r.get('hit', False))}"
+                f" dist={float(r.get('distance', 0.0)):.4f}"
+                f" obj={r.get('object')}"
+                f" dir={r.get('direction')}"
+                f" loc={r.get('location')}"
+                f" n={r.get('normal')}"
+            )
+
 
 def main():
     args = parse_args()

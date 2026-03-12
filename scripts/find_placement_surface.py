@@ -173,6 +173,82 @@ def _diameter_limit_from_safe_radius(
     return max(0.0, float(safe_radius)) / scale
 
 
+def _center_probe_debug(
+    scene: bpy.types.Scene,
+    depsgraph,
+    bmin: Vector,
+    bmax: Vector,
+    up: Vector,
+    up_idx: int,
+    hemisphere_rays: int,
+    ray_max: float,
+) -> Dict:
+    room_center = Vector((
+        (bmin.x + bmax.x) * 0.5,
+        (bmin.y + bmax.y) * 0.5,
+        (bmin.z + bmax.z) * 0.5,
+    ))
+    ceiling = bmax[up_idx] + 0.3
+    down = -up
+    eps = 0.01
+
+    down_origin = Vector(room_center)
+    down_origin[up_idx] = ceiling
+    down_hit, down_loc, down_n, _f, down_obj, _m = scene.ray_cast(
+        depsgraph, down_origin, down, distance=max(1.0, ceiling - bmin[up_idx] + 0.3)
+    )
+    down_info = {
+        "origin": [float(down_origin.x), float(down_origin.y), float(down_origin.z)],
+        "direction": [float(down.x), float(down.y), float(down.z)],
+        "hit": bool(down_hit),
+        "distance": float((Vector(down_loc) - down_origin).length) if down_hit else None,
+        "object": str(down_obj.name) if down_hit and down_obj is not None else None,
+        "location": [float(down_loc.x), float(down_loc.y), float(down_loc.z)] if down_hit else None,
+        "normal": [float(down_n.x), float(down_n.y), float(down_n.z)] if down_hit else None,
+    }
+
+    hemi_dirs = _fibonacci_dirs_hemisphere(int(hemisphere_rays), up)
+    hemi_origin = room_center + up * eps
+    rays = []
+    for i, d in enumerate(hemi_dirs):
+        o = hemi_origin + d * eps
+        hit, loc, normal, _f, obj, _m = scene.ray_cast(depsgraph, o, d, distance=float(ray_max))
+        if hit:
+            dist = (Vector(loc) - o).length
+            rays.append(
+                {
+                    "idx": int(i),
+                    "direction": [float(d.x), float(d.y), float(d.z)],
+                    "hit": True,
+                    "distance": float(dist),
+                    "object": str(obj.name) if obj is not None else None,
+                    "location": [float(loc.x), float(loc.y), float(loc.z)],
+                    "normal": [float(normal.x), float(normal.y), float(normal.z)],
+                }
+            )
+        else:
+            dist = min(float(ray_max), _ray_exit_distance_in_aabb(o, d, bmin, bmax))
+            rays.append(
+                {
+                    "idx": int(i),
+                    "direction": [float(d.x), float(d.y), float(d.z)],
+                    "hit": False,
+                    "distance": float(dist),
+                    "object": None,
+                    "location": None,
+                    "normal": None,
+                }
+            )
+
+    return {
+        "room_center": [float(room_center.x), float(room_center.y), float(room_center.z)],
+        "down_ray": down_info,
+        "hemisphere_origin": [float(hemi_origin.x), float(hemi_origin.y), float(hemi_origin.z)],
+        "hemisphere_ray_count": len(rays),
+        "hemisphere_rays": rays,
+    }
+
+
 def find_placement_surface(
     up_axis: str = "Z",
     ray_grid_step: float = 0.05,
@@ -312,6 +388,16 @@ def find_placement_surface(
             "duplicate_candidate": int(reject_duplicate),
             "too_tight_safe_radius": int(reject_too_tight),
         },
+        "debug_center_probe": _center_probe_debug(
+            scene=scene,
+            depsgraph=depsgraph,
+            bmin=bmin,
+            bmax=bmax,
+            up=up,
+            up_idx=up_idx,
+            hemisphere_rays=int(hemisphere_rays),
+            ray_max=float(ray_max),
+        ),
         "top_candidates": top,
     }
 
