@@ -69,9 +69,10 @@ def parse_args():
     p.add_argument("--target-d-min", type=float, default=0.15)
     p.add_argument("--target-d-max", type=float, default=0.45)
     p.add_argument("--target-d-step", type=float, default=0.05)
-    p.add_argument("--placement-ray-max", type=float, default=1.0, help="hemisphere probe max distance (m)")
+    p.add_argument("--placement-ray-max", type=float, default=4.0, help="hemisphere probe max distance (m)")
     p.add_argument("--placement-min-safe-radius", type=float, default=0.20, help="minimum accepted local safe radius (m)")
-    p.add_argument("--use-hemisphere", action="store_true", default=True)
+    p.add_argument("--use-hemisphere", dest="use_hemisphere", action="store_true", default=True)
+    p.add_argument("--no-use-hemisphere", dest="use_hemisphere", action="store_false")
     return p.parse_args(blender_args())
 
 
@@ -732,12 +733,10 @@ def print_surface_debug(result: dict, top_k: int = 8):
     if rs:
         print(
             "  -> placement rejects:"
-            f" area={rs.get('area_too_small', 0)}"
-            f" center={rs.get('centroid_outside_room_margin', 0)}"
+            f" wall_or_tilt={rs.get('wall_or_tilt_surface', 0)}"
+            f" dup={rs.get('duplicate_candidate', 0)}"
+            f" tight={rs.get('too_tight_safe_radius', 0)}"
             f" no_place={rs.get('no_place_candidates', 0)}"
-            f" dmax={rs.get('dmax_below_min', 0)}"
-            f" dhi={rs.get('dhi_below_min', 0)}"
-            f" cam={rs.get('camera_infeasible', 0)}"
         )
     tops = result.get("top_candidates") or []
     if not tops:
@@ -751,10 +750,7 @@ def print_surface_debug(result: dict, top_k: int = 8):
             f"     {i:02d}) obj={c.get('object_file')} "
             f"d={float(c.get('target_diameter', 0.0)):.3f} "
             f"dmax={float(c.get('d_max_geom', 0.0)):.3f} "
-            f"aclr={float(c.get('anchor_clearance_df', 0.0)):.3f} "
             f"cam={int(c.get('camera_ok', 0))}/{int(c.get('camera_total', 0))} "
-            f"area={float(c.get('surface_area', 0.0)):.3f} "
-            f"center_dist={float(c.get('room_center_dist', 0.0)):.3f} "
             f"anchor={anc_s}"
         )
 

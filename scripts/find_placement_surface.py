@@ -139,13 +139,26 @@ def _camera_radius_from_diameter(
     return (target_radius * float(camera_margin)) / math.sin(narrow * 0.5)
 
 
+def _diameter_limit_from_safe_radius(
+    safe_radius: float,
+    lens_mm: float,
+    res_x: int,
+    res_y: int,
+    sensor_width_mm: float,
+    camera_margin: float,
+) -> float:
+    # If diameter = 1.0m, required camera radius is `scale`.
+    scale = max(1e-6, _camera_radius_from_diameter(1.0, lens_mm, res_x, res_y, sensor_width_mm, camera_margin))
+    return max(0.0, float(safe_radius)) / scale
+
+
 def find_placement_surface(
     up_axis: str = "Z",
     ray_grid_step: float = 0.05,
     wall_margin: float = 0.05,
     max_tilt_deg: float = 60.0,
     hemisphere_rays: int = 96,
-    ray_max: float = 1.0,
+    ray_max: float = 4.0,
     voxel_size: float = 0.04,
     min_safe_radius: float = 0.20,
 ) -> Dict:
@@ -290,7 +303,7 @@ def find_best_surface_result(
     target_d_min: float = 0.15,
     target_d_max: float = 0.45,
     target_d_step: float = 0.05,
-    ray_max: float = 1.0,
+    ray_max: float = 4.0,
     min_safe_radius: float = 0.20,
     camera_margin: float = 1.40,
     camera_furniture_clearance: float = 0.15,
@@ -320,9 +333,14 @@ def find_best_surface_result(
 
     # Convert local safe radius into a diameter compatible with downstream camera logic.
     d_max = max(0.0, float(best.get("d_max_geom", 0.0)))
-    # Max target diameter that can still keep camera radius <= d_max.
-    denom = max(1e-6, _camera_radius_from_diameter(1.0, lens, res_x, res_y, sensor_width, camera_margin))
-    by_camera = 2.0 * d_max / denom
+    by_camera = _diameter_limit_from_safe_radius(
+        safe_radius=d_max,
+        lens_mm=lens,
+        res_x=res_x,
+        res_y=res_y,
+        sensor_width_mm=sensor_width,
+        camera_margin=camera_margin,
+    )
     d = max(float(target_d_min), min(float(target_d_max), by_camera))
 
     camera_r = _camera_radius_from_diameter(d, lens, res_x, res_y, sensor_width, camera_margin)
@@ -335,7 +353,14 @@ def find_best_surface_result(
 
     for t in tops:
         local_d_max = max(0.0, float(t.get("d_max_geom", 0.0)))
-        by_cam_t = 2.0 * local_d_max / denom
+        by_cam_t = _diameter_limit_from_safe_radius(
+            safe_radius=local_d_max,
+            lens_mm=lens,
+            res_x=res_x,
+            res_y=res_y,
+            sensor_width_mm=sensor_width,
+            camera_margin=camera_margin,
+        )
         td = max(float(target_d_min), min(float(target_d_max), by_cam_t))
         tr = _camera_radius_from_diameter(td, lens, res_x, res_y, sensor_width, camera_margin)
         tok = int(tr <= local_d_max + 1e-6)
