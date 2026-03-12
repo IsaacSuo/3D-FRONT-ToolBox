@@ -145,9 +145,9 @@ def find_placement_surface(
     wall_margin: float = 0.05,
     max_tilt_deg: float = 60.0,
     hemisphere_rays: int = 96,
-    ray_max: float = 8.0,
+    ray_max: float = 1.0,
     voxel_size: float = 0.04,
-    min_safe_radius: float = 0.10,
+    min_safe_radius: float = 0.20,
 ) -> Dict:
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -288,8 +288,10 @@ def find_best_surface_result(
     sensor_width: float = 36.0,
     use_hemisphere: bool = True,
     target_d_min: float = 0.15,
-    target_d_max: float = 0.50,
+    target_d_max: float = 0.45,
     target_d_step: float = 0.05,
+    ray_max: float = 1.0,
+    min_safe_radius: float = 0.20,
     camera_margin: float = 1.40,
     camera_furniture_clearance: float = 0.15,
     wall_margin: float = 0.12,
@@ -305,6 +307,8 @@ def find_best_surface_result(
         up_axis=up_axis,
         wall_margin=float(wall_margin),
         max_tilt_deg=float(max_tilt_deg),
+        ray_max=float(ray_max),
+        min_safe_radius=float(min_safe_radius),
     )
 
     best = base.get("best_surface")

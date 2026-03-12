@@ -66,9 +66,11 @@ def parse_args():
     p.add_argument("--up-axis", default="Y", choices=["X", "Y", "Z"], help="up axis of imported room OBJ")
     p.add_argument("--camera-margin", type=float, default=1.4)
     p.add_argument("--camera-furniture-clearance", type=float, default=0.15)
-    p.add_argument("--target-d-min", type=float, default=0.35)
-    p.add_argument("--target-d-max", type=float, default=1.20)
+    p.add_argument("--target-d-min", type=float, default=0.15)
+    p.add_argument("--target-d-max", type=float, default=0.45)
     p.add_argument("--target-d-step", type=float, default=0.05)
+    p.add_argument("--placement-ray-max", type=float, default=1.0, help="hemisphere probe max distance (m)")
+    p.add_argument("--placement-min-safe-radius", type=float, default=0.20, help="minimum accepted local safe radius (m)")
     p.add_argument("--use-hemisphere", action="store_true", default=True)
     return p.parse_args(blender_args())
 
@@ -704,6 +706,8 @@ def find_room_target_surface(room_dir: str, args):
         target_d_min=args.target_d_min,
         target_d_max=args.target_d_max,
         target_d_step=args.target_d_step,
+        ray_max=args.placement_ray_max,
+        min_safe_radius=args.placement_min_safe_radius,
         camera_margin=args.camera_margin,
         camera_furniture_clearance=args.camera_furniture_clearance,
         require_all_cameras=True,
