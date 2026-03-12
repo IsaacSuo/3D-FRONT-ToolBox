@@ -74,6 +74,7 @@ def parse_args():
     p.add_argument("--placement-min-safe-radius", type=float, default=0.20, help="minimum accepted local safe radius (m)")
     p.add_argument("--use-hemisphere", dest="use_hemisphere", action="store_true", default=True)
     p.add_argument("--no-use-hemisphere", dest="use_hemisphere", action="store_false")
+    p.add_argument("--diagnose-axes", action="store_true", help="diagnose placement behavior for X/Y/Z without rendering")
     return p.parse_args(blender_args())
 
 
@@ -718,6 +719,78 @@ def find_room_target_surface(room_dir: str, args):
     return result, best
 
 
+def axis_diagnosis_result(room_dir: str, args, axis: str) -> dict:
+    result = find_best_surface_result(
+        room_dir=room_dir,
+        up_axis=axis,
+        num_views=args.global_views,
+        lens=args.lens,
+        res_x=args.res_x,
+        res_y=args.res_y,
+        use_hemisphere=args.use_hemisphere,
+        target_d_min=args.target_d_min,
+        target_d_max=args.target_d_max,
+        target_d_step=args.target_d_step,
+        ray_max=args.placement_ray_max,
+        min_safe_radius=args.placement_min_safe_radius,
+        camera_margin=args.camera_margin,
+        camera_furniture_clearance=args.camera_furniture_clearance,
+        require_all_cameras=True,
+    )
+    center_dbg = result.get("debug_center_probe") or {}
+    down_ray = center_dbg.get("down_ray") or {}
+    return {
+        "axis": axis,
+        "num_candidates": int(result.get("num_candidates", 0)),
+        "num_evaluated": int(result.get("num_evaluated", 0)),
+        "reject_stats": result.get("reject_stats") or {},
+        "best_surface": result.get("best_surface"),
+        "top_candidates": result.get("top_candidates") or [],
+        "center_probe": {
+            "room_center": center_dbg.get("room_center"),
+            "hemisphere_origin": center_dbg.get("hemisphere_origin"),
+            "hemisphere_ray_count": int(center_dbg.get("hemisphere_ray_count", 0)),
+            "down_ray": {
+                "hit": bool(down_ray.get("hit", False)),
+                "object": down_ray.get("object"),
+                "distance": down_ray.get("distance"),
+                "location": down_ray.get("location"),
+                "normal": down_ray.get("normal"),
+            },
+        },
+    }
+
+
+def run_axis_diagnosis(room_dir: str, out_room: str, args, bmin: Vector, bmax: Vector) -> dict:
+    diagnosis = {
+        "room": room_scene_name(args.front_room_root, room_dir),
+        "room_dir": room_dir,
+        "configured_up_axis": args.up_axis,
+        "configured_placement_up_axis": args.placement_up_axis,
+        "room_bounds": {
+            "min": [bmin.x, bmin.y, bmin.z],
+            "max": [bmax.x, bmax.y, bmax.z],
+            "span": [bmax.x - bmin.x, bmax.y - bmin.y, bmax.z - bmin.z],
+        },
+        "axes": [],
+    }
+    for axis in ("X", "Y", "Z"):
+        axis_result = axis_diagnosis_result(room_dir, args, axis)
+        diagnosis["axes"].append(axis_result)
+        best = axis_result.get("best_surface")
+        best_obj = None if best is None else best.get("object_file")
+        print(
+            "  -> axis diag:"
+            f" axis={axis}"
+            f" candidates={axis_result['num_candidates']}"
+            f" evaluated={axis_result['num_evaluated']}"
+            f" best={best_obj}"
+        )
+    write_json(os.path.join(out_room, "axis_diagnosis.json"), diagnosis)
+    print("  -> axis diagnosis file=axis_diagnosis.json")
+    return diagnosis
+
+
 def write_json(path: str, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -849,6 +922,22 @@ def main():
 
         write_json(os.path.join(out_room, "lights.json"), lights_meta)
         write_json(os.path.join(out_room, "detect_debug.json"), room_debug)
+
+        if args.diagnose_axes:
+            run_axis_diagnosis(room_dir, out_room, args, bmin, bmax)
+            summary["rooms"].append(
+                {
+                    "room": scene_name,
+                    "room_dir": room_dir,
+                    "status": "axis_diagnosed",
+                    "diagnosis_file": os.path.join(scene_name, "axis_diagnosis.json"),
+                }
+            )
+            if len(rooms) == 1:
+                print("  -> stop: diagnose-only mode for single specified room")
+                break
+            print("  -> continue: diagnose next room")
+            continue
 
         placement_result, best_surface = find_room_target_surface(room_dir, args)
         write_json(os.path.join(out_room, "placement_surface.json"), placement_result)
