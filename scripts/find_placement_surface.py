@@ -429,7 +429,7 @@ def find_best_surface_result(
 ) -> Dict:
     # Compatibility wrapper expected by batch_render.py and test_front_lighting.py.
     _ = (room_dir, target_d_step, camera_furniture_clearance, min_area, height_bin, use_hemisphere)
-    probe_lift = max(float(target_d_min) * 0.5, float(min_safe_radius))
+    probe_lift = float(target_d_min) * 0.5
 
     base = find_placement_surface(
         up_axis=up_axis,
