@@ -742,18 +742,18 @@ def print_surface_debug(result: dict, top_k: int = 8):
     tops = result.get("top_candidates") or []
     if not tops:
         print("  -> placement top candidates: none")
-        return
-    print("  -> placement top candidates:")
-    for i, c in enumerate(tops[: max(1, int(top_k))], start=1):
-        anc = c.get("anchor_center")
-        anc_s = "None" if anc is None else f"[{anc[0]:.3f},{anc[1]:.3f},{anc[2]:.3f}]"
-        print(
-            f"     {i:02d}) obj={c.get('object_file')} "
-            f"d={float(c.get('target_diameter', 0.0)):.3f} "
-            f"dmax={float(c.get('d_max_geom', 0.0)):.3f} "
-            f"cam={int(c.get('camera_ok', 0))}/{int(c.get('camera_total', 0))} "
-            f"anchor={anc_s}"
-        )
+    else:
+        print("  -> placement top candidates:")
+        for i, c in enumerate(tops[: max(1, int(top_k))], start=1):
+            anc = c.get("anchor_center")
+            anc_s = "None" if anc is None else f"[{anc[0]:.3f},{anc[1]:.3f},{anc[2]:.3f}]"
+            print(
+                f"     {i:02d}) obj={c.get('object_file')} "
+                f"d={float(c.get('target_diameter', 0.0)):.3f} "
+                f"dmax={float(c.get('d_max_geom', 0.0)):.3f} "
+                f"cam={int(c.get('camera_ok', 0))}/{int(c.get('camera_total', 0))} "
+                f"anchor={anc_s}"
+            )
 
     dbg = result.get("debug_center_probe") or {}
     if dbg:
