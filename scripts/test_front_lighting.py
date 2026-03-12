@@ -64,6 +64,7 @@ def parse_args():
     p.add_argument("--gpu-backend", default="CUDA", choices=["CUDA", "OPTIX", "HIP", "METAL", "ONEAPI"])
     p.add_argument("--world-strength", type=float, default=0.02, help="tiny ambient fill only")
     p.add_argument("--up-axis", default="Y", choices=["X", "Y", "Z"], help="up axis of imported room OBJ")
+    p.add_argument("--placement-up-axis", default="Z", choices=["X", "Y", "Z"], help="up axis used by placement-ray solver")
     p.add_argument("--camera-margin", type=float, default=1.4)
     p.add_argument("--camera-furniture-clearance", type=float, default=0.15)
     p.add_argument("--target-d-min", type=float, default=0.15)
@@ -698,7 +699,7 @@ def _clamp_into_room_aabb(p: Vector, bmin: Vector, bmax: Vector, margin: float =
 def find_room_target_surface(room_dir: str, args):
     result = find_best_surface_result(
         room_dir=room_dir,
-        up_axis=args.up_axis,
+        up_axis=args.placement_up_axis,
         num_views=args.global_views,
         lens=args.lens,
         res_x=args.res_x,
