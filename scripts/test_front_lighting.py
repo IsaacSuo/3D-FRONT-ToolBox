@@ -718,7 +718,13 @@ def find_room_target_surface(room_dir: str, args):
     return result, best
 
 
-def print_surface_debug(result: dict, top_k: int = 8):
+def write_json(path: str, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def print_surface_debug(result: dict, top_k: int = 8, debug_file: str = None):
     if not isinstance(result, dict):
         print("  -> placement debug: invalid result payload")
         return
@@ -757,6 +763,8 @@ def print_surface_debug(result: dict, top_k: int = 8):
 
     dbg = result.get("debug_center_probe") or {}
     if dbg:
+        if debug_file:
+            write_json(debug_file, dbg)
         rc = dbg.get("room_center")
         dr = dbg.get("down_ray") or {}
         ho = dbg.get("hemisphere_origin")
@@ -774,24 +782,15 @@ def print_surface_debug(result: dict, top_k: int = 8):
             f" loc={dr.get('location')}"
             f" n={dr.get('normal')}"
         )
-        rays = dbg.get("hemisphere_rays") or []
-        for r in rays:
-            print(
-                "     hemi:"
-                f" idx={int(r.get('idx', -1)):03d}"
-                f" hit={bool(r.get('hit', False))}"
-                f" dist={float(r.get('distance', 0.0)):.4f}"
-                f" obj={r.get('object')}"
-                f" dir={r.get('direction')}"
-                f" loc={r.get('location')}"
-                f" n={r.get('normal')}"
-            )
+        if debug_file:
+            print(f"     detail_file={os.path.basename(debug_file)}")
 
 
 def main():
     args = parse_args()
     random.seed(args.seed)
     up_idx = axis_index(args.up_axis)
+    placement_up_idx = axis_index(args.placement_up_axis)
 
     model_info = load_model_info(args.model_info)
     rooms = discover_room_dirs(args.front_room_root)
@@ -848,15 +847,16 @@ def main():
             meta["source_obj"] = lamp["source_obj"]
             lights_meta.append(meta)
 
-        with open(os.path.join(out_room, "lights.json"), "w", encoding="utf-8") as f:
-            json.dump(lights_meta, f, ensure_ascii=False, indent=2)
-        with open(os.path.join(out_room, "detect_debug.json"), "w", encoding="utf-8") as f:
-            json.dump(room_debug, f, ensure_ascii=False, indent=2)
+        write_json(os.path.join(out_room, "lights.json"), lights_meta)
+        write_json(os.path.join(out_room, "detect_debug.json"), room_debug)
 
         placement_result, best_surface = find_room_target_surface(room_dir, args)
-        with open(os.path.join(out_room, "placement_surface.json"), "w", encoding="utf-8") as f:
-            json.dump(placement_result, f, ensure_ascii=False, indent=2)
-        print_surface_debug(placement_result, top_k=8)
+        write_json(os.path.join(out_room, "placement_surface.json"), placement_result)
+        print_surface_debug(
+            placement_result,
+            top_k=8,
+            debug_file=os.path.join(out_room, "center_probe_debug.json"),
+        )
 
         if best_surface is None:
             print("  -> stop room: no feasible best surface")
@@ -885,7 +885,7 @@ def main():
             n_samples=args.global_views,
             radius=safe_distance_3d,
             center_loc=target_center,
-            up_idx=up_idx,
+            up_idx=placement_up_idx,
             hemisphere=args.use_hemisphere,
         )
         for i, p in enumerate(g_points):
@@ -921,7 +921,7 @@ def main():
                 n_samples=int(args.preview_center_views),
                 radius=center_radius,
                 center_loc=room_center,
-                up_idx=up_idx,
+                up_idx=placement_up_idx,
                 hemisphere=True,
             )
             for i, p in enumerate(c_points):
@@ -938,8 +938,7 @@ def main():
                     }
                 )
 
-        with open(os.path.join(out_room, "renders.json"), "w", encoding="utf-8") as f:
-            json.dump(renders_meta, f, ensure_ascii=False, indent=2)
+        write_json(os.path.join(out_room, "renders.json"), renders_meta)
 
         outside_cnt = 0
         for r in renders_meta:
@@ -973,8 +972,7 @@ def main():
         )
         print(f"  -> lamps={len(lights_meta)} images={len(renders_meta)}")
 
-    with open(os.path.join(args.output, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    write_json(os.path.join(args.output, "summary.json"), summary)
     print("Done.")
 
 
