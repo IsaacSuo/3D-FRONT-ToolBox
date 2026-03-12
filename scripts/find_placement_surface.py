@@ -258,6 +258,7 @@ def find_placement_surface(
     ray_max: float = 4.0,
     voxel_size: float = 0.04,
     min_safe_radius: float = 0.20,
+    probe_lift: float = 0.20,
 ) -> Dict:
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -313,13 +314,14 @@ def find_placement_surface(
 
     hemi_dirs = _fibonacci_dirs_hemisphere(int(hemisphere_rays), up)
     eps = 0.01
+    lift = max(float(eps), float(probe_lift))
     evaluated = []
     reject_too_tight = 0
     for c in candidates:
         p = c["point"]
         min_dist = float(ray_max)
         for d in hemi_dirs:
-            o = p + up * eps + d * eps
+            o = p + up * lift + d * eps
             hit, loc, _n, _f, _obj, _m = scene.ray_cast(depsgraph, o, d, distance=float(ray_max))
             if hit:
                 dist = (Vector(loc) - o).length
@@ -427,6 +429,7 @@ def find_best_surface_result(
 ) -> Dict:
     # Compatibility wrapper expected by batch_render.py and test_front_lighting.py.
     _ = (room_dir, target_d_step, camera_furniture_clearance, min_area, height_bin, use_hemisphere)
+    probe_lift = max(float(target_d_min) * 0.5, float(min_safe_radius))
 
     base = find_placement_surface(
         up_axis=up_axis,
@@ -435,6 +438,7 @@ def find_best_surface_result(
         hemisphere_rays=int(hemisphere_rays),
         ray_max=float(ray_max),
         min_safe_radius=float(min_safe_radius),
+        probe_lift=float(probe_lift),
     )
 
     best = base.get("best_surface")
