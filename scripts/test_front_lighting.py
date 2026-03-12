@@ -921,7 +921,7 @@ def main():
                 n_samples=int(args.preview_center_views),
                 radius=center_radius,
                 center_loc=room_center,
-                up_idx=placement_up_idx,
+                up_idx=up_idx,
                 hemisphere=True,
             )
             for i, p in enumerate(c_points):
